@@ -1,0 +1,29 @@
+{
+  "name": "cron-price-fetcher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cron job for fetching crypto prices from Dexscreener, CoinGecko, and CMC using data from Google Sheets.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/src/server.js",
+    "once": "node dist/src/index.js",
+    "dev": "tsx watch src/server.ts",
+    "dev:once": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "axios": "^1.12.2",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.3",
+    "p-retry": "^7.0.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}
