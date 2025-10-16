@@ -119,17 +119,50 @@ const server = http.createServer(async (req, res) => {
       // Optional auth with RUN_TOKEN
       const token = url.searchParams.get("token");
       if (process.env.RUN_TOKEN && token !== process.env.RUN_TOKEN) {
-        res.writeHead(401, { "Content-Type": "application/json",
+        res.writeHead(401, {
+          "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization" });
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        });
         res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
         return;
       }
 
-      // Optional silent mode to avoid large outputs in external cron logs
-      const silent = url.searchParams.get("silent") === "1";
+      // Query flags
+      const silent = url.searchParams.get("silent") === "1"; // respond with 204
+      const asyncMode = url.searchParams.get("async") === "1"; // queue and return immediately
 
+      if (asyncMode) {
+        // run in background and return immediately
+        setImmediate(async () => {
+          try {
+            const prices = await runOnce();
+            const summary = summarize(prices);
+            console.log(
+              `[run async] total=${summary.totals.total} ok=${summary.totals.withPrice} nulls=${summary.totals.nulls} src=${JSON.stringify(summary.bySource)}`
+            );
+          } catch (e: any) {
+            console.error("[run async] error:", e?.message || e);
+          }
+        });
+
+        if (silent) {
+          res.writeHead(204, {
+            "Content-Length": "0",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+          });
+          res.end();
+          return;
+        }
+
+        ok(res, { ok: true, queued: true, at: new Date().toISOString() }, 5);
+        return;
+      }
+
+      // Blocking mode (legacy): execute and return summary
       const prices = await runOnce();
 
       if (silent) {
