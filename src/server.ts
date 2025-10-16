@@ -116,7 +116,33 @@ const server = http.createServer(async (req, res) => {
       (req.method === "POST" || req.method === "GET") &&
       url.pathname === "/run"
     ) {
+      // Optional auth with RUN_TOKEN
+      const token = url.searchParams.get("token");
+      if (process.env.RUN_TOKEN && token !== process.env.RUN_TOKEN) {
+        res.writeHead(401, { "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization" });
+        res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+        return;
+      }
+
+      // Optional silent mode to avoid large outputs in external cron logs
+      const silent = url.searchParams.get("silent") === "1";
+
       const prices = await runOnce();
+
+      if (silent) {
+        res.writeHead(204, {
+          "Content-Length": "0",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        });
+        res.end();
+        return;
+      }
+
       const summary = summarize(prices);
       ok(
         res,
