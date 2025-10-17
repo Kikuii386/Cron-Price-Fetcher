@@ -225,7 +225,17 @@ const server = http.createServer(async (req, res) => {
       const tokens = await readTokensFromAppsScript();
       const keys = tokens.map((t) => cacheKey(t.chain, t.contract_address));
       const cached = await Promise.all(keys.map((k) => cacheGet<PriceResult>(k)));
-      const prices = cached.filter((v): v is PriceResult => !!v);
+      let prices = cached.filter((v): v is PriceResult => !!v);
+
+      const force = url.searchParams.get("refresh") === "1";
+      const redisEnabled = Boolean(CFG.cache.redisUrl && CFG.cache.redisToken);
+
+      // ถ้า force หรือไม่มี Redis หรือ cache ว่าง ให้คำนวณสด
+      if (force || !redisEnabled || prices.length === 0) {
+        prices = await fetchAllPrices(tokens);
+        if (redisEnabled) await storeResults(prices);
+      }
+
       const summary = summarize(prices);
       ok(res, { asOf: new Date().toISOString(), ...summary }, 30);
       return;
