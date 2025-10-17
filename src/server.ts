@@ -241,6 +241,51 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Debug: quick CoinGecko probe to verify connectivity and ids
+    if (req.method === "GET" && url.pathname === "/debug/gecko") {
+      try {
+        const tokens = await readTokensFromAppsScript();
+        const ids = Array.from(
+          new Set(
+            tokens
+              .map((t) => t.coingecko_id)
+              .filter((x): x is string => !!x)
+          )
+        ).slice(0, 25); // probe first 25 ids
+
+        if (ids.length === 0) {
+          ok(res, { ok: true, note: "no coingecko_id in tokens" });
+          return;
+        }
+
+        const urlCg = `https://api.coingecko.com/api/v3/simple/price?ids=${ids.map(encodeURIComponent).join(",")}&vs_currencies=usd`;
+        const cg = await axios.get(urlCg, {
+          timeout: 15000,
+          headers: { Accept: "application/json", "User-Agent": "cron-price-fetcher/1.0" },
+          validateStatus: (s) => s >= 200 && s < 500,
+        });
+
+        const body = cg.data || {};
+        const have = Object.keys(body);
+        const sample = have.slice(0, 5).reduce((acc: any, k) => {
+          acc[k] = body[k]?.usd ?? null;
+          return acc;
+        }, {} as Record<string, number | null>);
+
+        ok(res, {
+          ok: true,
+          status: cg.status,
+          idsRequested: ids.length,
+          idsReturned: have.length,
+          sample,
+        });
+        return;
+      } catch (err: any) {
+        bad(res, 502, `gecko probe failed: ${err?.message || err}`);
+        return;
+      }
+    }
+
     bad(res, 404, "not found");
   } catch (e: any) {
     json(res, 500, { ok: false, error: e?.message || "internal error" });
