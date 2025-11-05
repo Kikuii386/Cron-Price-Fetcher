@@ -124,9 +124,12 @@ export async function storeResults(results: PriceResult[]) {
   if (upErr) console.error("[supabase] batch upsert prices error:", upErr.message);
 
   // insert history for rows that have price
+  /*
+  // History insertion has been disabled
   const history = upserts.filter((r) => r.price_usd !== null && r.price_usd !== undefined);
   if (history.length) {
     const { error: histErr } = await client.from("prices_history").insert(history);
     if (histErr) console.error("[supabase] batch insert history error:", histErr.message);
   }
+  */
 }
