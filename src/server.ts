@@ -49,7 +49,7 @@ function summarize(prices: PriceResult[]) {
 
 function normalizeToken(x: any): SheetTokenRow | null {
   const chain = String(x.chain || x.cmcChain || "").trim().toLowerCase();
-  const address = String(x.contract || x.address || "").trim();
+  const address = String(x.contract || x.address || "").trim().toLowerCase();
   if (!chain || !address) return null;
   const symbol = (x.name || x.symbol || "").toString().replace(/^\$/, "") || undefined;
   const cmc_id =
@@ -75,8 +75,11 @@ function normalizeToken(x: any): SheetTokenRow | null {
 
 async function readTokensFromAppsScript(): Promise<SheetTokenRow[]> {
   if (!CFG.source.appsScriptUrl) throw new Error("Missing APPS_SCRIPT_URL");
-  const r = await axios.get(CFG.source.appsScriptUrl, {
+  const u = new URL(CFG.source.appsScriptUrl);
+  u.searchParams.set("_t", String(Date.now())); // cache buster to avoid stale data on Render/CDN
+  const r = await axios.get(u.toString(), {
     timeout: 20000,
+    headers: { "Cache-Control": "no-cache" },
     validateStatus: (s) => s >= 200 && s < 500,
   });
   const arr = Array.isArray(r.data) ? r.data : [];
@@ -207,12 +210,11 @@ const server = http.createServer(async (req, res) => {
 
       const force = url.searchParams.get("refresh") === "1";
       const includeSummary = url.searchParams.get("summary") === "1";
-      const redisEnabled = Boolean(CFG.cache.redisUrl && CFG.cache.redisToken);
 
-      // Fallback: compute fresh if forced, or Redis disabled, or cache empty
-      if (force || !redisEnabled || prices.length === 0) {
+      // Refresh only when explicitly requested or cache empty
+      if (force || prices.length === 0) {
         prices = await fetchAllPrices(tokens);
-        if (redisEnabled) await storeResults(prices);
+        await storeResults(prices);
       }
 
       const body: any = { asOf, prices };
@@ -222,18 +224,48 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/stats") {
+      const refresh = url.searchParams.get("refresh") === "1";
+      const asyncMode = url.searchParams.get("async") === "1";
+      const silent = url.searchParams.get("silent") === "1";
+
       const tokens = await readTokensFromAppsScript();
       const keys = tokens.map((t) => cacheKey(t.chain, t.contract_address));
       const cached = await Promise.all(keys.map((k) => cacheGet<PriceResult>(k)));
       let prices = cached.filter((v): v is PriceResult => !!v);
 
-      const force = url.searchParams.get("refresh") === "1";
-      const redisEnabled = Boolean(CFG.cache.redisUrl && CFG.cache.redisToken);
+      if (refresh) {
+        if (asyncMode) {
+          setImmediate(async () => {
+            try {
+              const fresh = await fetchAllPrices(tokens);
+              await storeResults(fresh);
+              const s = summarize(fresh);
+              console.log(
+                `[stats refresh async] total=${s.totals.total} ok=${s.totals.withPrice} nulls=${s.totals.nulls} src=${JSON.stringify(s.bySource)}`
+              );
+            } catch (e: any) {
+              console.error("[stats refresh async] error:", e?.message || e);
+            }
+          });
 
-      // ถ้า force หรือไม่มี Redis หรือ cache ว่าง ให้คำนวณสด
-      if (force || !redisEnabled || prices.length === 0) {
+          if (silent) {
+            res.writeHead(204, {
+              "Content-Length": "0",
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+              "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            });
+            res.end();
+            return;
+          }
+
+          ok(res, { ok: true, queued: true, at: new Date().toISOString() }, 5);
+          return;
+        }
+
+        // Blocking refresh (use with care)
         prices = await fetchAllPrices(tokens);
-        if (redisEnabled) await storeResults(prices);
+        await storeResults(prices);
       }
 
       const summary = summarize(prices);
@@ -285,6 +317,23 @@ const server = http.createServer(async (req, res) => {
         return;
       }
     }
+
+    // Debug: show source URL and how many tokens returned
+if (req.method === "GET" && url.pathname === "/debug/source") {
+  try {
+    const src = CFG.source.appsScriptUrl || "(missing)";
+    const tokens = await readTokensFromAppsScript();
+    ok(res, {
+      ok: true,
+      appsScriptUrl: src,
+      count: tokens.length,
+      sample: tokens.slice(0, 3).map(t => ({ chain: t.chain, address: t.contract_address, geckoId: t.coingecko_id })),
+    });
+  } catch (e: any) {
+    bad(res, 502, e?.message || String(e));
+  }
+  return;
+}
 
     bad(res, 404, "not found");
   } catch (e: any) {
