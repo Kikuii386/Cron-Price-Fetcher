@@ -1,0 +1,12 @@
+name: supabase-cron
+on:
+  schedule:
+    - cron: "*/5 * * * *"  # ทุก 5 นาที (UTC)
+  workflow_dispatch:
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invoke Supabase Edge Function
+        run: curl -fsS "https://jyxwpybghrmrmqurlrdg.supabase.co/functions/v1/cron-run"
