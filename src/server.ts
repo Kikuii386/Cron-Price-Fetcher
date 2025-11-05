@@ -4,6 +4,7 @@ import { CFG } from "./config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
 import { storeResults, cacheGet, cacheKey } from "./storage.js";
 import type { SheetTokenRow, PriceResult } from "./types.js";
+import { createClient } from '@supabase/supabase-js';
 
 // --- Helpers ---
 function json(
@@ -92,6 +93,26 @@ async function runOnce(): Promise<PriceResult[]> {
   const prices = await fetchAllPrices(tokens);
   await storeResults(prices);
   return prices;
+}
+
+async function withTimeoutFetch<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Timeout')), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).then(result => {
+    clearTimeout(timeoutId);
+    return result;
+  });
+}
+
+function supaFetchWithTimeout(input: any, init: any = {}) {
+  const ms = Number(process.env.SB_FETCH_TIMEOUT_MS || 15000);
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  const opts = { ...init, signal: controller.signal };
+  // @ts-ignore
+  return fetch(input, opts).finally(() => clearTimeout(id));
 }
 
 // --- Server ---
@@ -331,6 +352,39 @@ if (req.method === "GET" && url.pathname === "/debug/source") {
     });
   } catch (e: any) {
     bad(res, 502, e?.message || String(e));
+  }
+  return;
+}
+
+// Debug: Supabase connection check
+if (req.method === "GET" && url.pathname === "/debug/sb") {
+  try {
+    const urlEnv = process.env.SUPABASE_URL;
+    const keyEnv = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY;
+    if (!urlEnv || !keyEnv) {
+      ok(res, { ok: false, error: "missing SUPABASE_URL or key" });
+      return;
+    }
+
+    // Create client with a fetch that has a timeout
+    const sb = createClient(urlEnv, keyEnv, {
+      auth: { persistSession: false },
+      global: { fetch: supaFetchWithTimeout as any },
+    });
+
+    // Lightweight probe: head + count only
+    const { count, error } = await sb
+      .from("prices")
+      .select("*", { head: true, count: "estimated" });
+
+    if (error) {
+      ok(res, { ok: false, error: error.message });
+      return;
+    }
+
+    ok(res, { ok: true, count: count ?? 0 });
+  } catch (e: any) {
+    ok(res, { ok: false, error: e?.message || String(e) });
   }
   return;
 }
