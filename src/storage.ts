@@ -30,12 +30,32 @@ function withTimeoutFetch(input: any, init: any = {}) {
 // ────────────────────────────────────────────────────────────────
 let sb: SupabaseClient | null = null;
 
+function mask(key?: string) {
+  if (!key) return "";
+  return key.length > 8 ? `${key.slice(0,4)}…${key.slice(-4)}` : "****";
+}
+
 function init() {
   if (sb) return sb;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY;
-  if (!url || !key) return null;
-  sb = createClient(url, key, {
+
+  const url  = process.env.SUPABASE_URL;
+  const sr   = process.env.SUPABASE_SERVICE_ROLE;   // prefer service role on server
+  const anon = process.env.SUPABASE_ANON_KEY;       // fallback for public environments
+
+  if (!url) {
+    console.error("[supabase] missing SUPABASE_URL");
+    return null;
+  }
+  if (!sr && !anon) {
+    console.error("[supabase] missing both SUPABASE_SERVICE_ROLE and SUPABASE_ANON_KEY");
+    return null;
+  }
+
+  const key = sr || anon;
+  const which = sr ? "SERVICE_ROLE" : "ANON_KEY";
+  console.log(`[supabase] init using ${which} (url=${url}, key=${mask(key)})`);
+
+  sb = createClient(url, key!, {
     auth: { persistSession: false },
     global: { fetch: withTimeoutFetch as any },
   });
@@ -81,6 +101,7 @@ export async function cacheSet(key: string, value: any, _ttlSeconds?: number) {
   if (upErr) {
     console.error("[supabase] upsert prices error:", upErr.message);
   }
+  else console.log("[supabase] upsert prices ok: 1 row");
 
   // History insertion disabled — we only keep latest snapshot in `prices` now
   // if (row.price_usd !== null && row.price_usd !== undefined) {
@@ -132,26 +153,25 @@ export async function storeResults(results: PriceResult[]) {
   if (!enabled() || !results?.length) return;
   const client = init()!;
 
-  const upserts = results.map((r) => ({
-    chain: String(r.chain).toLowerCase(),
-    address: String(r.address).toLowerCase(),
-    symbol: r.symbol ?? null,
-    price_usd: r.priceUsd ?? null,
-    source: r.source ?? null,
-    at: r.at ? new Date(r.at).toISOString() : new Date().toISOString(),
-  }));
+  // ✅ เขียนเฉพาะแถวที่มีราคาจริง
+  const upserts = results
+    .filter(r => r.priceUsd != null && Number.isFinite(r.priceUsd as number))
+    .map(r => ({
+      chain: String(r.chain).toLowerCase(),
+      address: String(r.address).toLowerCase(),
+      symbol: r.symbol ?? null,
+      price_usd: r.priceUsd as number,
+      source: r.source ?? null,
+      at: new Date().toISOString(),
+    }));
 
-  // upsert latest batch
+  if (upserts.length === 0) {
+    console.log("[supabase] nothing to upsert (no real prices this round)");
+    return;
+  }
+
+  // upsert เฉพาะแถวที่มีราคาจริง
   const { error: upErr } = await client.from("prices").upsert(upserts, { onConflict: "chain,address" });
   if (upErr) console.error("[supabase] batch upsert prices error:", upErr.message);
-
-  // insert history for rows that have price
-  /*
-  // History insertion has been disabled
-  const history = upserts.filter((r) => r.price_usd !== null && r.price_usd !== undefined);
-  if (history.length) {
-    const { error: histErr } = await client.from("prices_history").insert(history);
-    if (histErr) console.error("[supabase] batch insert history error:", histErr.message);
-  }
-  */
+  else console.log(`[supabase] batch upsert prices ok: ${upserts.length} rows`);
 }
