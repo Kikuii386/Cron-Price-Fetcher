@@ -87,29 +87,37 @@ export async function cacheSet(key: string, value: any, _ttlSeconds?: number) {
   const parsed = parseKey(key);
   if (!parsed) return;
 
+  const priceNum = value?.priceUsd == null ? null : Number(value.priceUsd);
+  const hasRealPrice = priceNum != null && Number.isFinite(priceNum) && priceNum > 0;
+
+  if (!hasRealPrice) {
+    // Do not overwrite with null/zero/NaN – skip quietly
+    return;
+  }
+
   const row = {
     chain: parsed.chain,
     address: parsed.address,
     symbol: value?.symbol ?? null,
-    price_usd: value?.priceUsd ?? null,
+    price_usd: priceNum,
     source: value?.source ?? null,
     at: value?.at ? new Date(value.at).toISOString() : new Date().toISOString(),
   };
 
-  // upsert latest
-  const { error: upErr } = await client.from("prices").upsert(row, { onConflict: "chain,address" });
-  if (upErr) {
-    console.error("[supabase] upsert prices error:", upErr.message);
+  const t0 = Date.now();
+  try {
+    await pRetry(async () => {
+      const { error } = await client
+        .from("prices")
+        .upsert(row, { onConflict: "chain,address" });
+      if (error) throw new Error(error.message);
+    }, { retries: 2, minTimeout: 400, maxTimeout: 1200 });
+    console.log(`[supabase] upsert prices ok: 1 row in ${Date.now() - t0}ms`);
+  } catch (e: any) {
+    console.error(`[supabase] upsert prices error after ${Date.now() - t0}ms:`, e?.message || e);
   }
-  else console.log("[supabase] upsert prices ok: 1 row");
 
   // History insertion disabled — we only keep latest snapshot in `prices` now
-  // if (row.price_usd !== null && row.price_usd !== undefined) {
-  //   const { error: histErr } = await client.from("prices_history").insert(row);
-  //   if (histErr) {
-  //     console.error("[supabase] insert history error:", histErr.message);
-  //   }
-  // }
 }
 
 // Read a single latest record from `prices` by key
@@ -148,6 +156,7 @@ export async function cacheGet<T = any>(key: string): Promise<T | null> {
   }
 }
 
+
 // Bulk store — used by the fetch cycle to write many results efficiently
 export async function storeResults(results: PriceResult[]) {
   if (!enabled() || !results?.length) return;
@@ -155,12 +164,16 @@ export async function storeResults(results: PriceResult[]) {
 
   // ✅ เขียนเฉพาะแถวที่มีราคาจริง
   const upserts = results
-    .filter(r => r.priceUsd != null && Number.isFinite(r.priceUsd as number))
+    .map(r => ({
+      ...r,
+      priceNum: r.priceUsd == null ? null : Number(r.priceUsd),
+    }))
+    .filter(r => r.priceNum != null && Number.isFinite(r.priceNum) && r.priceNum > 0)
     .map(r => ({
       chain: String(r.chain).toLowerCase(),
       address: String(r.address).toLowerCase(),
       symbol: r.symbol ?? null,
-      price_usd: r.priceUsd as number,
+      price_usd: r.priceNum as number,
       source: r.source ?? null,
       at: new Date().toISOString(),
     }));
@@ -171,7 +184,43 @@ export async function storeResults(results: PriceResult[]) {
   }
 
   // upsert เฉพาะแถวที่มีราคาจริง
-  const { error: upErr } = await client.from("prices").upsert(upserts, { onConflict: "chain,address" });
-  if (upErr) console.error("[supabase] batch upsert prices error:", upErr.message);
-  else console.log(`[supabase] batch upsert prices ok: ${upserts.length} rows`);
+  const t0 = Date.now();
+  console.log('[supabase] preparing batch upsert, rows:', upserts.length, 'sample:', upserts.slice(0, 2));
+  try {
+    await pRetry(async () => {
+      const { error } = await client
+        .from('prices')
+        .upsert(upserts, { onConflict: 'chain,address' });
+      if (error) throw new Error(error.message);
+    }, { retries: 2, minTimeout: 400, maxTimeout: 1200 });
+    console.log(`[supabase] batch upsert prices ok: ${upserts.length} rows in ${Date.now() - t0}ms`);
+  } catch (e: any) {
+    console.error(`[supabase] batch upsert prices error after ${Date.now() - t0}ms:`, e?.message || e);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Diagnostics: quick ping to detect Supabase connectivity/timeout
+// ────────────────────────────────────────────────────────────────
+export async function pingSupabase(timeoutMs = 5000): Promise<{ ok: boolean; ms: number; error?: string }> {
+  const client = init();
+  const t0 = Date.now();
+  if (!client) {
+    return { ok: false, ms: 0, error: 'supabase not initialized' };
+  }
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+    const { error } = await client
+      .from('prices')
+      .select('address', { head: true, count: 'exact' })
+      .limit(1);
+    if (error) return { ok: false, ms: Date.now() - t0, error: error.message };
+    return { ok: true, ms: Date.now() - t0 };
+  } catch (e: any) {
+    return { ok: false, ms: Date.now() - t0, error: e?.message || String(e) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

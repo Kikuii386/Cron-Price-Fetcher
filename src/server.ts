@@ -3,6 +3,7 @@ import axios from "axios";
 import { CFG } from "./config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
 import { storeResults, cacheGet, cacheKey } from "./storage.js";
+import { pingSupabase } from './storage.js';
 import type { SheetTokenRow, PriceResult } from "./types.js";
 import { createClient } from '@supabase/supabase-js';
 
@@ -115,6 +116,45 @@ function supaFetchWithTimeout(input: any, init: any = {}) {
   return fetch(input, opts).finally(() => clearTimeout(id));
 }
 
+// --- Instrumentation for debug ---
+let LAST_RUN_SUMMARY: any = null;
+
+async function runOnceInstrumented(): Promise<void> {
+  const startedAt = new Date().toISOString();
+  const t0 = Date.now();
+  const summary: any = { ok: false, startedAt };
+  try {
+    const t1 = Date.now();
+    const tokens = await readTokensFromAppsScript();
+    summary.tokens = { count: tokens.length, ms: Date.now() - t1 };
+
+    const t2 = Date.now();
+    const prices = await fetchAllPrices(tokens);
+    summary.fetch = {
+      count: prices.length,
+      ms: Date.now() - t2,
+      bySource: prices.reduce((acc: any, p: any) => {
+        const k = p.source || 'unknown';
+        if (p.priceUsd != null && Number(p.priceUsd) > 0) acc[k] = (acc[k] || 0) + 1;
+        return acc;
+      }, {}),
+    };
+
+    const t3 = Date.now();
+    await storeResults(prices);
+    summary.store = { ms: Date.now() - t3 };
+
+    summary.ok = true;
+    summary.totalMs = Date.now() - t0;
+    LAST_RUN_SUMMARY = summary;
+  } catch (e: any) {
+    summary.ok = false;
+    summary.error = e?.message || String(e);
+    summary.totalMs = Date.now() - t0;
+    LAST_RUN_SUMMARY = summary;
+  }
+}
+
 // --- Server ---
 const server = http.createServer(async (req, res) => {
   try {
@@ -161,11 +201,7 @@ const server = http.createServer(async (req, res) => {
         // run in background and return immediately
         setImmediate(async () => {
           try {
-            const prices = await runOnce();
-            const summary = summarize(prices);
-            console.log(
-              `[run async] total=${summary.totals.total} ok=${summary.totals.withPrice} nulls=${summary.totals.nulls} src=${JSON.stringify(summary.bySource)}`
-            );
+            await runOnceInstrumented();
           } catch (e: any) {
             console.error("[run async] error:", e?.message || e);
           }
@@ -386,6 +422,44 @@ if (req.method === "GET" && url.pathname === "/debug/sb") {
   } catch (e: any) {
     ok(res, { ok: false, error: e?.message || String(e) });
   }
+  return;
+}
+
+    // Debug: latency and connectivity checks
+    if (req.method === 'GET' && url.pathname === '/debug/pings') {
+      try {
+        const dsT0 = Date.now();
+        let dsOk = false, dsMs = 0, dsErr: string | undefined;
+        try {
+          const ds = await axios.get(
+            'https://api.dexscreener.com/latest/dex/tokens/0x88faea256f789f8dd50de54f9c807eef24f71b16',
+            { timeout: 8000, validateStatus: s => s >= 200 && s < 500 }
+          );
+          dsOk = ds.status === 200;
+          dsMs = Date.now() - dsT0;
+          if (!dsOk) dsErr = `http ${ds.status}`;
+        } catch (e: any) {
+          dsMs = Date.now() - dsT0;
+          dsErr = e?.message || String(e);
+        }
+
+        const sb = await pingSupabase(8000);
+
+        ok(res, {
+          asOf: new Date().toISOString(),
+          dexscreener: { ok: dsOk, ms: dsMs, error: dsErr },
+          supabase: sb,
+        }, 5);
+        return;
+      } catch (e: any) {
+        bad(res, 500, e?.message || String(e));
+        return;
+      }
+    }
+
+// Debug: show last run summary if available
+if (req.method === 'GET' && url.pathname === '/debug/last-run') {
+  ok(res, LAST_RUN_SUMMARY ?? { ok: false, error: 'no run yet' }, 0);
   return;
 }
 
