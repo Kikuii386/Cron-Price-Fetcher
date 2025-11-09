@@ -96,16 +96,6 @@ async function runOnce(): Promise<PriceResult[]> {
   return prices;
 }
 
-async function withTimeoutFetch<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('Timeout')), ms);
-  });
-  return Promise.race([promise, timeoutPromise]).then(result => {
-    clearTimeout(timeoutId);
-    return result;
-  });
-}
 
 function supaFetchWithTimeout(input: any, init: any = {}) {
   const ms = Number(process.env.SB_FETCH_TIMEOUT_MS || 15000);
@@ -461,6 +451,67 @@ if (req.method === "GET" && url.pathname === "/debug/sb") {
 if (req.method === 'GET' && url.pathname === '/debug/last-run') {
   ok(res, LAST_RUN_SUMMARY ?? { ok: false, error: 'no run yet' }, 0);
   return;
+}
+
+// Debug: ตรวจว่าทำไมราคา Dexscreener ไม่ตรง (ดูคู่/พูลทั้งหมดและตัวที่เลือก)
+if (req.method === "GET" && url.pathname === "/debug/ds-why") {
+  try {
+    const chain = (url.searchParams.get("chain") || "").toLowerCase();
+    const address = (url.searchParams.get("address") || "").toLowerCase();
+    if (!address) {
+      bad(res, 400, "missing address");
+      return;
+    }
+
+    // ดึงทุกคู่ของ token นี้ (ปิด cache)
+    const apiUrl = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}?_t=${Date.now()}`;
+    const r = await axios.get(apiUrl, {
+      timeout: 15000,
+      headers: { "Cache-Control": "no-cache", "User-Agent": "cron-price-fetcher/1.0" },
+      validateStatus: s => s >= 200 && s < 500,
+    });
+
+    if (r.status !== 200 || !r.data?.pairs) {
+      bad(res, 502, `dexscreener http ${r.status}`);
+      return;
+    }
+
+    const pairs = r.data.pairs as any[];
+
+    // คำนวณตัวช่วย
+    const norm = (p: any) => ({
+      chainId: p.chainId,
+      dexId: p.dexId,
+      pairAddress: p.pairAddress,
+      quote: p.quoteToken?.symbol,
+      liq: Number(p.liquidity?.usd ?? p.liquidityUsd ?? 0),
+      vol24h: Number(p.volume?.h24 ?? p.volume24h ?? 0),
+      priceUsd: p.priceUsd != null ? Number(p.priceUsd) : null,
+    });
+
+    const rows = pairs.map(norm);
+
+    // เลือก best โดย 2 เกณฑ์ให้เห็นความต่าง
+    const byLiq = [...rows].sort((a,b) => (b.liq - a.liq))[0] || null;
+
+    const QUOTES = ["USDC","USDT","WETH","SOL","WBTC","ETH","BUSD"];
+    const rowsPreferred = rows.filter(r => QUOTES.includes(String(r.quote || "").toUpperCase()));
+    const byPreferredThenLiq = (rowsPreferred.length ? rowsPreferred : rows)
+      .sort((a,b) => (b.liq - a.liq))[0] || null;
+
+    ok(res, {
+      ok: true,
+      queried: { chain, address },
+      count: rows.length,
+      top5: rows.sort((a,b)=>b.liq-a.liq).slice(0,5),
+      pickByLiq: byLiq,
+      pickPreferredThenLiq: byPreferredThenLiq,
+    }, 5);
+    return;
+  } catch (e: any) {
+    bad(res, 500, e?.message || String(e));
+    return;
+  }
 }
 
     bad(res, 404, "not found");

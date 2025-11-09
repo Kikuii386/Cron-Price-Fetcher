@@ -47,10 +47,15 @@ function pickBestPair(pairs: DexPair[] = []): DexPair | null {
  * Low-level: fetch raw pairs by token (contract address or Solana mint).
  */
 export async function fetchDexscreenerPairsByToken(address: string): Promise<DexPair[]> {
-  const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
+  const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}?_t=${Date.now()}`;
   const res = await axios.get<DexTokensResponse>(url, {
     timeout: CFG.api.timeoutMs,
-    headers: { Accept: "application/json", "User-Agent": "cron-price-fetcher/1.0" },
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "cron-price-fetcher/1.0",
+      "Cache-Control": "no-cache, no-store, max-age=0",
+      Pragma: "no-cache",
+    },
     validateStatus: (s) => s >= 200 && s < 500,
   });
   return res.data?.pairs || [];
@@ -129,26 +134,30 @@ export async function fetchDexscreenerBatchByTokens(
 
   for (let i = 0; i < uniq.length; i += batchSize) {
     const chunk = uniq.slice(i, i + batchSize);
-    const url = `https://api.dexscreener.com/latest/dex/tokens/${chunk.map(c => encodeURIComponent(c.original)).join(',')}`;
+    const url = `https://api.dexscreener.com/latest/dex/tokens/${chunk.map(c => encodeURIComponent(c.original)).join(',')}?_t=${Date.now()}`;
 
     const res = await pRetry(async () => {
       return axios.get(url, {
         timeout: timeoutMs,
-        headers: { Accept: "application/json", "User-Agent": "cron-price-fetcher/1.0" },
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "cron-price-fetcher/1.0",
+          "Cache-Control": "no-cache, no-store, max-age=0",
+          Pragma: "no-cache",
+        },
         validateStatus: (s) => s >= 200 && s < 500,
       });
     }, { retries, factor: 2 });
 
     const pairs = (res.data?.pairs ?? []) as DexPair[];
 
-    // group pairs back to requested addresses (match by base/quote token address)
+    // group pairs back to requested addresses (match by base token address only)
     const setReq = new Set(chunk.map(c => c.key));
     const grouped: Record<string, DexPair[]> = {};
     for (const p of pairs) {
       const bKey = String(p.baseToken?.address || "").toLowerCase();
-      const qKey = String(p.quoteToken?.address || "").toLowerCase();
+      // Only group by BASE token to avoid mixing quote-token prices.
       if (setReq.has(bKey)) (grouped[bKey] ||= []).push(p);
-      if (setReq.has(qKey)) (grouped[qKey] ||= []).push(p);
     }
 
     // pick best pair and assign price (store under lowercase key)

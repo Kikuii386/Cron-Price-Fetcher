@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PriceResult } from "./types.js";
 import pRetry from "p-retry";
 
-const SB_FETCH_TIMEOUT_MS = Number(process.env.SB_FETCH_TIMEOUT_MS || 15000);
+const SB_FETCH_TIMEOUT_MS = Number(process.env.SB_FETCH_TIMEOUT_MS || 30000);
 
 function withTimeoutFetch(input: any, init: any = {}) {
   const controller = new AbortController();
@@ -87,19 +87,20 @@ export async function cacheSet(key: string, value: any, _ttlSeconds?: number) {
   const parsed = parseKey(key);
   if (!parsed) return;
 
-  const priceNum = value?.priceUsd == null ? null : Number(value.priceUsd);
-  const hasRealPrice = priceNum != null && Number.isFinite(priceNum) && priceNum > 0;
-
-  if (!hasRealPrice) {
-    // Do not overwrite with null/zero/NaN – skip quietly
-    return;
+  // accept 0 and preserve precision by passing as string to numeric column
+  const raw = value?.priceUsd;
+  const priceStr = raw == null ? null : String(raw).trim();
+  const valid = priceStr != null && priceStr !== '' && /^(?:-?\d+(?:\.\d+)?(?:e-?\d+)?)$/i.test(priceStr);
+  if (!valid) {
+    return; // skip only when truly invalid/null
   }
 
   const row = {
     chain: parsed.chain,
     address: parsed.address,
     symbol: value?.symbol ?? null,
-    price_usd: priceNum,
+    // send string; Postgres numeric will parse it without JS float rounding
+    price_usd: priceStr,
     source: value?.source ?? null,
     at: value?.at ? new Date(value.at).toISOString() : new Date().toISOString(),
   };
@@ -109,7 +110,7 @@ export async function cacheSet(key: string, value: any, _ttlSeconds?: number) {
     await pRetry(async () => {
       const { error } = await client
         .from("prices")
-        .upsert(row, { onConflict: "chain,address" });
+        .upsert(row, { onConflict: "chain,address" }); // supabase-js v2 returns minimal unless .select() is chained
       if (error) throw new Error(error.message);
     }, { retries: 2, minTimeout: 400, maxTimeout: 1200 });
     console.log(`[supabase] upsert prices ok: 1 row in ${Date.now() - t0}ms`);
@@ -144,7 +145,7 @@ export async function cacheGet<T = any>(key: string): Promise<T | null> {
       chain: data.chain,
       address: data.address,
       symbol: data.symbol ?? undefined,
-      priceUsd: data.price_usd === null ? null : Number(data.price_usd),
+      priceUsd: data.price_usd === null ? null : Number(String(data.price_usd)),
       source: data.source ?? null,
       at: data.at ?? new Date().toISOString(),
     };
@@ -158,25 +159,43 @@ export async function cacheGet<T = any>(key: string): Promise<T | null> {
 
 
 // Bulk store — used by the fetch cycle to write many results efficiently
-export async function storeResults(results: PriceResult[]) {
+export async function storeResults(results: PriceResult[], opts: { force?: boolean } = {}) {
   if (!enabled() || !results?.length) return;
   const client = init()!;
 
-  // ✅ เขียนเฉพาะแถวที่มีราคาจริง
+  if (opts.force) {
+    console.log("[supabase] force overwrite enabled");
+    const addresses = results.map(r => String(r.address).toLowerCase());
+    try {
+      await pRetry(async () => {
+        const { error } = await client
+          .from('prices')
+          .delete()
+          .in('address', addresses);
+        if (error) throw new Error(error.message);
+      }, { retries: 1, minTimeout: 500, maxTimeout: 1200 });
+    } catch (e: any) {
+      console.error(`[supabase] error deleting existing prices for force overwrite:`, e?.message || e);
+      // proceed anyway to upsert
+    }
+  }
+
+  // ✅ เขียนเฉพาะแถวที่มีราคาจริงหรือศูนย์ และเก็บ precision เป็น string
   const upserts = results
-    .map(r => ({
-      ...r,
-      priceNum: r.priceUsd == null ? null : Number(r.priceUsd),
-    }))
-    .filter(r => r.priceNum != null && Number.isFinite(r.priceNum) && r.priceNum > 0)
-    .map(r => ({
-      chain: String(r.chain).toLowerCase(),
-      address: String(r.address).toLowerCase(),
-      symbol: r.symbol ?? null,
-      price_usd: r.priceNum as number,
-      source: r.source ?? null,
-      at: new Date().toISOString(),
-    }));
+    .map(r => {
+      const raw = (r as any).priceUsd;
+      const priceStr = raw == null ? null : String(raw).trim();
+      const valid = priceStr != null && priceStr !== '' && /^(?:-?\d+(?:\.\d+)?(?:e-?\d+)?)$/i.test(priceStr);
+      return valid ? {
+        chain: String(r.chain).toLowerCase(),
+        address: String(r.address).toLowerCase(),
+        symbol: r.symbol ?? null,
+        price_usd: priceStr, // keep as string to preserve precision
+        source: r.source ?? null,
+        at: new Date().toISOString(),
+      } : null;
+    })
+    .filter(Boolean) as Array<{ chain: string; address: string; symbol: string | null; price_usd: string; source: string | null; at: string }>; 
 
   if (upserts.length === 0) {
     console.log("[supabase] nothing to upsert (no real prices this round)");
@@ -190,9 +209,9 @@ export async function storeResults(results: PriceResult[]) {
     await pRetry(async () => {
       const { error } = await client
         .from('prices')
-        .upsert(upserts, { onConflict: 'chain,address' });
+        .upsert(upserts, { onConflict: 'chain,address' }); // default is minimal unless .select() is chained
       if (error) throw new Error(error.message);
-    }, { retries: 2, minTimeout: 400, maxTimeout: 1200 });
+    }, { retries: 1, minTimeout: 500, maxTimeout: 1200 });
     console.log(`[supabase] batch upsert prices ok: ${upserts.length} rows in ${Date.now() - t0}ms`);
   } catch (e: any) {
     console.error(`[supabase] batch upsert prices error after ${Date.now() - t0}ms:`, e?.message || e);
@@ -205,13 +224,8 @@ export async function storeResults(results: PriceResult[]) {
 export async function pingSupabase(timeoutMs = 5000): Promise<{ ok: boolean; ms: number; error?: string }> {
   const client = init();
   const t0 = Date.now();
-  if (!client) {
-    return { ok: false, ms: 0, error: 'supabase not initialized' };
-  }
-  let timer: NodeJS.Timeout | null = null;
+  if (!client) return { ok: false, ms: 0, error: 'supabase not initialized' };
   try {
-    const controller = new AbortController();
-    timer = setTimeout(() => controller.abort(), timeoutMs);
     const { error } = await client
       .from('prices')
       .select('address', { head: true, count: 'exact' })
@@ -220,7 +234,5 @@ export async function pingSupabase(timeoutMs = 5000): Promise<{ ok: boolean; ms:
     return { ok: true, ms: Date.now() - t0 };
   } catch (e: any) {
     return { ok: false, ms: Date.now() - t0, error: e?.message || String(e) };
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }
