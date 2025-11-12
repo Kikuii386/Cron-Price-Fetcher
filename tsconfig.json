@@ -1,5 +1,3 @@
-
-
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -21,6 +19,8 @@
     "baseUrl": ".",
     "rootDir": ".",
     "outDir": "dist",
+    "sourceMap": true,
+    "inlineSources": true,
     "types": ["node"]
   },
   "include": [
