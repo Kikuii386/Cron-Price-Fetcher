@@ -1,5 +1,6 @@
 import axios from "axios";
 import pRetry from "p-retry";
+import crypto from "node:crypto";
 import { CFG } from "../config.js";
 
 const GECKO_BATCH = Math.max(1, Math.min(250, Number(process.env.GECKO_BATCH || 150)));
@@ -8,7 +9,13 @@ const GECKO_MAX_RETRIES = Math.max(0, Number(process.env.GECKO_MAX_RETRIES || 3)
 
 function geckoHeaders() {
   const apiKey = process.env.COINGECKO_API_KEY || "";
-  const h: Record<string, string> = { Accept: "application/json", "User-Agent": "cron-price-fetcher/1.0" };
+  const h: Record<string, string> = {
+    Accept: "application/json",
+    "User-Agent": "cron-price-fetcher/1.0",
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    Pragma: "no-cache",
+    "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
+  };
   if (apiKey) h["x-cg-api-key"] = apiKey; // supported on CG pro/free key
   return h;
 }
@@ -33,7 +40,7 @@ const DEFAULT_TIMEOUT = () => CFG.api.timeoutMs || 8000;
  */
 export async function fetchCoingeckoPriceById(id: string): Promise<number | null> {
   if (!id) return null;
-  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(id)}&vs_currencies=usd`;
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(id)}&vs_currencies=usd&_t=${Date.now()}`;
   const res = await pRetry(
     async () => {
       const r = await axios.get(url, {
@@ -78,7 +85,7 @@ export async function fetchCoingeckoBatchByIds(
 
   for (const part of chunk(uniq, batchSize)) {
     const query = part.map((id) => encodeURIComponent(id)).join(",");
-    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${query}&vs_currencies=usd`;
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${query}&vs_currencies=usd&_t=${Date.now()}`;
 
     const res = await pRetry(
       async () => {

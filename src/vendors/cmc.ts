@@ -2,22 +2,34 @@ import axios from "axios";
 import pRetry from "p-retry";
 import * as cheerio from "cheerio";
 import { CFG } from "../config.js";
+import crypto from "node:crypto";
 
 // Fast + robust CMC (slug-only) implementation, aligned with a typical test-cmc style
 // Order: data-api by slug → data-api by id (from HTML) → __NEXT_DATA__ parse → DOM fallback
 
 const TIMEOUT = () => CFG.api.timeoutMs || 12000;
-const HEADERS_JSON = {
-  "user-agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  accept: "application/json",
-};
-const HEADERS_HTML = {
-  "user-agent": HEADERS_JSON["user-agent"],
-  accept:
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-  "accept-language": "en-US,en;q=0.9",
-};
+function HEADERS_JSON() {
+  return {
+    "user-agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    accept: "application/json",
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    Pragma: "no-cache",
+    "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
+  };
+}
+function HEADERS_HTML() {
+  return {
+    "user-agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    Pragma: "no-cache",
+    "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
+  };
+}
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -76,10 +88,10 @@ function readUsdPriceFromAny(data: any): number | null {
 async function cmcDataApiQuoteBySlug(slug: string) {
   const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/quote/latest?slug=${encodeURIComponent(
     slug
-  )}&convert=USD`;
+  )}&convert=USD&_t=${Date.now()}`;
   const res = await axios.get(url, {
     timeout: TIMEOUT(),
-    headers: HEADERS_JSON,
+    headers: HEADERS_JSON(),
     validateStatus: (s) => s >= 200 && s < 500,
   });
   if (res.status >= 400) throw new Error(`CMC quote slug HTTP ${res.status}`);
@@ -87,10 +99,10 @@ async function cmcDataApiQuoteBySlug(slug: string) {
 }
 
 async function cmcDataApiQuoteById(id: number) {
-  const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/quote/latest?id=${id}&convert=USD`;
+  const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/quote/latest?id=${id}&convert=USD&_t=${Date.now()}`;
   const res = await axios.get(url, {
     timeout: TIMEOUT(),
-    headers: HEADERS_JSON,
+    headers: HEADERS_JSON(),
     validateStatus: (s) => s >= 200 && s < 500,
   });
   if (res.status >= 400) throw new Error(`CMC quote id HTTP ${res.status}`);
@@ -98,10 +110,10 @@ async function cmcDataApiQuoteById(id: number) {
 }
 
 async function fetchHtml(slug: string) {
-  const url = `https://coinmarketcap.com/currencies/${encodeURIComponent(slug)}/`;
+  const url = `https://coinmarketcap.com/currencies/${encodeURIComponent(slug)}/?_t=${Date.now()}`;
   const res = await axios.get<string>(url, {
     timeout: TIMEOUT(),
-    headers: HEADERS_HTML,
+    headers: HEADERS_HTML(),
     responseType: "text",
     validateStatus: (s) => s >= 200 && s < 500,
   });

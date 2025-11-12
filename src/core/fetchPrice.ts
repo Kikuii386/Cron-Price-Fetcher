@@ -1,8 +1,6 @@
-
-
 import type { SheetTokenRow, PriceResult } from "../types.js";
 import { toPriceResult } from "./normalize.js";
-import { cacheGet, cacheKey } from "../storage.js";
+import { cacheGet, cacheKey, readCacheBatch } from "../storage.js";
 import { fetchDexscreenerBatchByTokens, fetchDexscreenerPrice } from "../vendors/dexscreener.js";
 import { fetchCoingeckoBatchByIds, fetchCoingeckoPrice } from "../vendors/coingecko.js";
 import { fetchCmcBatchBySlugs, fetchCmcPriceBySlug } from "../vendors/cmc.js";
@@ -15,12 +13,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *   Dexscreener → CoinGecko (slug) → CMC (slug)
  * This is used rarely (debug/compat). For bulk, use fetchAllPrices().
  */
-export async function fetchPriceForToken(t: SheetTokenRow): Promise<PriceResult> {
+export async function fetchPriceForToken(t: SheetTokenRow, opts: { bypassCache?: boolean } = {}): Promise<PriceResult> {
   const { chain, contract_address, symbol, coingecko_id, cmc_slug } = t;
 
   // cache first
-  const cached = await cacheGet<PriceResult>(cacheKey(chain, contract_address));
-  if (cached) return cached;
+  
+  if (!opts.bypassCache) {
+    const cached = await cacheGet<PriceResult>(cacheKey(chain, contract_address));
+    if (cached) return cached;
+  }
 
   // 1) Dexscreener (single)
   const p1 = await fetchDexscreenerPrice(contract_address).catch(() => null);
@@ -47,22 +48,65 @@ export async function fetchPriceForToken(t: SheetTokenRow): Promise<PriceResult>
  * - Preserves input order in the returned array.
  * - Reads cache first; writing to cache is handled by storeResults() outside.
  */
-export async function fetchAllPrices(tokens: SheetTokenRow[]): Promise<PriceResult[]> {
+export async function fetchAllPrices(tokens: SheetTokenRow[], opts: { bypassCache?: boolean } = {}): Promise<PriceResult[]> {
   // Prepare structures
   const results: PriceResult[] = new Array(tokens.length);
   const needFetchIdx: number[] = [];
 
-  // 0) Try cache first to reduce calls within short TTL windows
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    const c = await cacheGet<PriceResult>(cacheKey(t.chain, t.contract_address));
-    if (c) {
-      results[i] = c; // already normalized
+  // 0) Try cache first to reduce calls within short TTL windows (unless bypassCache is requested)
+  const useBatchCache = process.env.BATCH_CACHE === "1";
+  if (!opts.bypassCache) {
+    if (useBatchCache) {
+      // Fast path: read many cache rows at once
+      const cacheMap = await readCacheBatch(tokens);
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        const k = `${t.chain.toLowerCase()}|${t.contract_address.toLowerCase()}`;
+        const r = cacheMap.get(k) as any;
+        if (r) {
+          results[i] = {
+            chain: t.chain,
+            address: t.contract_address,
+            symbol: t.symbol,
+            priceUsd: r.price_usd != null ? Number(String(r.price_usd)) : null,
+            source: (r.source ?? null) as any,
+            at: (r.at ?? new Date().toISOString()) as string,
+          };
+        } else {
+          needFetchIdx.push(i);
+        }
+      }
+      if (!needFetchIdx.length) return results; // all from cache
     } else {
+      // Legacy path: cache-get one by one
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        const c = await cacheGet<PriceResult>(cacheKey(t.chain, t.contract_address));
+        if (c) {
+          results[i] = c; // already normalized
+        } else {
+          needFetchIdx.push(i);
+        }
+      }
+      if (!needFetchIdx.length) return results; // all from cache
+    }
+  } else {
+    for (let i = 0; i < tokens.length; i++) {
       needFetchIdx.push(i);
     }
   }
-  if (!needFetchIdx.length) return results; // all from cache
+
+  if (!opts.bypassCache) {
+    if (useBatchCache) {
+      const fromCache = results.filter(Boolean).length;
+      console.log("[fetchAllPrices] cache-first=batch", { fromCache, needFetch: needFetchIdx.length });
+    } else {
+      const fromCache = results.filter(Boolean).length;
+      console.log("[fetchAllPrices] cache-first=legacy", { fromCache, needFetch: needFetchIdx.length });
+    }
+  } else {
+    console.log("[fetchAllPrices] bypassCache=true (skip cache)");
+  }
 
   // A helper to apply a map back to pending indices
   const applyMap = (

@@ -1,6 +1,7 @@
 import axios from "axios";
 import pRetry from "p-retry";
 import { CFG } from "../config.js";
+import crypto from "node:crypto";
 
 /**
  * Minimal types for Dexscreener API
@@ -23,9 +24,53 @@ export type DexTokensResponse = {
 };
 
 /**
+ * Utilities for robust price selection without hardcoding quote symbols.
+ * Strategy: take the median of top-N liquidity pools (defaults: N=3, minLiq=$50).
+ */
+function toNum(v: any, d = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
+function computeMedian(nums: number[]): number | null {
+  if (!nums.length) return null;
+  const a = nums.slice().sort((x, y) => x - y);
+  const mid = Math.floor(a.length / 2);
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+}
+
+function topByLiquidity(pairs: DexPair[], minLiqUsd = 50): DexPair[] {
+  const rows = (pairs || [])
+    .filter(p => p && p.priceUsd != null)
+    .map(p => ({
+      ...p,
+      _liq: toNum(p?.liquidity?.usd, 0),
+      _price: toNum(p?.priceUsd, NaN),
+    }))
+    .filter(p => Number.isFinite(p._price) && p._liq >= minLiqUsd)
+    .sort((a:any, b:any) => b._liq - a._liq);
+  return rows as unknown as DexPair[];
+}
+
+/**
+ * Return a robust USD price: median of top-N liquidity pools.
+ * If fewer rows than N, median of what's available. If none, null.
+ */
+function pickBestPrice(pairs: DexPair[], opts?: { topN?: number; minLiqUsd?: number }): number | null {
+  const topN = Math.max(1, Math.min(10, opts?.topN ?? 3));
+  const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 50);
+  const rows = topByLiquidity(pairs, minLiqUsd);
+  if (!rows.length) return null;
+  const slice = rows.slice(0, topN);
+  const prices = slice.map((r:any) => toNum(r.priceUsd, NaN)).filter(Number.isFinite);
+  return computeMedian(prices);
+}
+
+/**
  * Choose the most reliable pair: prioritize highest USD liquidity, then 24h volume, then has price.
  */
 function pickBestPair(pairs: DexPair[] = []): DexPair | null {
+  // DEPRECATED: kept for compatibility in debug helpers. Use pickBestPrice() for price selection.
   const candidates = pairs.filter((p) => p && p.priceUsd != null);
   if (!candidates.length) return null;
   return candidates
@@ -48,16 +93,17 @@ function pickBestPair(pairs: DexPair[] = []): DexPair | null {
  */
 export async function fetchDexscreenerPairsByToken(address: string): Promise<DexPair[]> {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}?_t=${Date.now()}`;
-  const res = await axios.get<DexTokensResponse>(url, {
+  const res = await pRetry(() => axios.get<DexTokensResponse>(url, {
     timeout: CFG.api.timeoutMs,
     headers: {
       Accept: "application/json",
       "User-Agent": "cron-price-fetcher/1.0",
       "Cache-Control": "no-cache, no-store, max-age=0",
       Pragma: "no-cache",
+      "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
     },
     validateStatus: (s) => s >= 200 && s < 500,
-  });
+  }), { retries: 2, factor: 2 });
   return res.data?.pairs || [];
 }
 
@@ -68,10 +114,8 @@ export async function fetchDexscreenerPairsByToken(address: string): Promise<Dex
 export async function fetchDexscreenerPrice(address: string): Promise<number | null> {
   return await pRetry(async () => {
     const pairs = await fetchDexscreenerPairsByToken(address);
-    const best = pickBestPair(pairs);
-    if (!best?.priceUsd) return null;
-    const n = Number(best.priceUsd);
-    return Number.isFinite(n) ? n : null;
+    const price = pickBestPrice(pairs);
+    return price != null && Number.isFinite(price) ? price : null;
   }, { retries: 2, factor: 2 });
 }
 
@@ -88,13 +132,12 @@ export async function fetchDexscreenerQuote(address: string): Promise<{
   liquidityUsd?: number | null;
 }> {
   const pairs = await fetchDexscreenerPairsByToken(address);
-  const best = pickBestPair(pairs);
-  if (!best) {
-    return { price: null };
-  }
-  const price = best.priceUsd != null ? Number(best.priceUsd) : null;
+  const rows = topByLiquidity(pairs, 50);
+  if (!rows.length) return { price: null };
+  const price = pickBestPrice(pairs, { topN: 3, minLiqUsd: 50 });
+  const best = rows[0] as DexPair;
   return {
-    price: Number.isFinite(Number(price)) ? Number(price) : null,
+    price: price != null && Number.isFinite(price) ? price : null,
     marketCap: (best.marketCap ?? best.fdv) ?? null,
     volume24h: best.volume?.h24 ?? null,
     pairUrl: best.url,
@@ -144,6 +187,7 @@ export async function fetchDexscreenerBatchByTokens(
           "User-Agent": "cron-price-fetcher/1.0",
           "Cache-Control": "no-cache, no-store, max-age=0",
           Pragma: "no-cache",
+          "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
         },
         validateStatus: (s) => s >= 200 && s < 500,
       });
@@ -162,8 +206,8 @@ export async function fetchDexscreenerBatchByTokens(
 
     // pick best pair and assign price (store under lowercase key)
     for (const c of chunk) {
-      const best = grouped[c.key] ? pickBestPair(grouped[c.key]) : null;
-      out[c.key] = best?.priceUsd != null ? Number(best.priceUsd) : null;
+      const price = grouped[c.key] ? pickBestPrice(grouped[c.key], { topN: 3, minLiqUsd: 50 }) : null;
+      out[c.key] = price != null && Number.isFinite(price) ? price : null;
     }
 
     // Fallback: if batch returned empty pairs or we couldn't assign any price,

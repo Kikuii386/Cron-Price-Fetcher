@@ -2,9 +2,20 @@ import * as http from "http";
 import axios from "axios";
 import { CFG } from "./config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
-import { storeResults, cacheGet, cacheKey } from "./storage.js";
+import { storeResults, cacheGet, cacheKey, readCacheBatch } from "./storage.js";
 import { pingSupabase } from './storage.js';
 import type { SheetTokenRow, PriceResult } from "./types.js";
+
+// Lightweight shape for Dexscreener normalized rows used in debug endpoints
+export type DsRow = {
+  chainId: string;
+  dexId: string;
+  pairAddress: string;
+  quote?: string;
+  liq: number;
+  vol24h: number;
+  priceUsd: number | null;
+};
 import { createClient } from '@supabase/supabase-js';
 
 // --- Helpers ---
@@ -91,7 +102,7 @@ async function readTokensFromAppsScript(): Promise<SheetTokenRow[]> {
 async function runOnce(): Promise<PriceResult[]> {
   const tokens = await readTokensFromAppsScript();
   if (!tokens.length) return [];
-  const prices = await fetchAllPrices(tokens);
+  const prices = await fetchAllPrices(tokens, { bypassCache: true });
   await storeResults(prices);
   return prices;
 }
@@ -120,6 +131,15 @@ async function runOnceInstrumented(): Promise<void> {
 
     const t2 = Date.now();
     const prices = await fetchAllPrices(tokens);
+    const sampleRows = prices
+      .filter(p => p && p.priceUsd != null)
+      .slice(0, 5)
+      .map(p => ({
+        chain: p.chain,
+        address: p.address,
+        price_usd: typeof p.priceUsd === 'number' ? p.priceUsd : Number(p.priceUsd),
+        source: p.source,
+      }));
     summary.fetch = {
       count: prices.length,
       ms: Date.now() - t2,
@@ -128,6 +148,7 @@ async function runOnceInstrumented(): Promise<void> {
         if (p.priceUsd != null && Number(p.priceUsd) > 0) acc[k] = (acc[k] || 0) + 1;
         return acc;
       }, {}),
+      sample: sampleRows,
     };
 
     const t3 = Date.now();
@@ -227,6 +248,19 @@ const server = http.createServer(async (req, res) => {
       }
 
       const summary = summarize(prices);
+      const focus = (url.searchParams.get("focus") || "").toLowerCase().trim();
+      let focusRow: any = null;
+      if (focus) {
+        const match = prices.find(p => (p.address || "").toLowerCase() === focus);
+        if (match) {
+          focusRow = {
+            chain: match.chain,
+            address: match.address,
+            price_usd: typeof match.priceUsd === 'number' ? match.priceUsd : Number(match.priceUsd),
+            source: match.source,
+          };
+        }
+      }
       ok(
         res,
         {
@@ -236,6 +270,7 @@ const server = http.createServer(async (req, res) => {
           nulls: summary.totals.nulls,
           bySource: summary.bySource,
           at: new Date().toISOString(),
+          ...(focus ? { focus: focusRow } : {}),
         },
         30
       );
@@ -243,7 +278,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/prices") {
-      // Read tokens → read cached prices in parallel → return compact payload
+      // Read tokens → read cached prices in batch (fast path) → optionally refresh
       const tokens = await readTokensFromAppsScript();
       const asOf = new Date().toISOString();
       if (!tokens.length) {
@@ -251,22 +286,38 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const keys = tokens.map((t) => cacheKey(t.chain, t.contract_address));
-      const cached = await Promise.all(keys.map((k) => cacheGet<PriceResult>(k)));
-      let prices = cached.filter((v): v is PriceResult => !!v);
-
       const force = url.searchParams.get("refresh") === "1";
       const includeSummary = url.searchParams.get("summary") === "1";
 
-      // Refresh only when explicitly requested or cache empty
-      if (force || prices.length === 0) {
-        prices = await fetchAllPrices(tokens);
-        await storeResults(prices);
+      // Fast path: when not forcing refresh, return batch-cached prices ONLY (no vendor calls)
+      if (!force) {
+        const cacheMap = await readCacheBatch(tokens);
+        const prices: PriceResult[] = tokens.map((t) => {
+          const k = `${t.chain.toLowerCase()}|${t.contract_address.toLowerCase()}`;
+          const r: any = cacheMap.get(k);
+          return {
+            chain: t.chain,
+            address: t.contract_address,
+            symbol: t.symbol ?? undefined,
+            priceUsd: r?.price_usd != null ? Number(String(r.price_usd)) : null,
+            source: r?.source ?? null,
+            at: r?.at ?? null,
+          };
+        });
+
+        const body: any = { asOf, prices };
+        if (includeSummary) body.summary = summarize(prices);
+        ok(res, body, 30);
+        return;
       }
 
-      const body: any = { asOf, prices };
-      if (includeSummary) body.summary = summarize(prices);
-      ok(res, body, 60);
+      // Slow path: explicit refresh → fetch from vendors (bypass cache) and store
+      const fresh = await fetchAllPrices(tokens, { bypassCache: true });
+      await storeResults(fresh);
+
+      const body: any = { asOf, prices: fresh };
+      if (includeSummary) body.summary = summarize(fresh);
+      ok(res, body, 5);
       return;
     }
 
@@ -456,8 +507,10 @@ if (req.method === 'GET' && url.pathname === '/debug/last-run') {
 // Debug: ตรวจว่าทำไมราคา Dexscreener ไม่ตรง (ดูคู่/พูลทั้งหมดและตัวที่เลือก)
 if (req.method === "GET" && url.pathname === "/debug/ds-why") {
   try {
-    const chain = (url.searchParams.get("chain") || "").toLowerCase();
-    const address = (url.searchParams.get("address") || "").toLowerCase();
+    const chainParam = (url.searchParams.get("chain") ?? url.searchParams.get("b") ?? "").toLowerCase();
+    const addressParam = (url.searchParams.get("address") ?? url.searchParams.get("a") ?? "").toLowerCase();
+    const chain = chainParam;
+    const address = addressParam;
     if (!address) {
       bad(res, 400, "missing address");
       return;
@@ -489,24 +542,171 @@ if (req.method === "GET" && url.pathname === "/debug/ds-why") {
       priceUsd: p.priceUsd != null ? Number(p.priceUsd) : null,
     });
 
-    const rows = pairs.map(norm);
+    const rows: DsRow[] = pairs.map(norm);
 
     // เลือก best โดย 2 เกณฑ์ให้เห็นความต่าง
-    const byLiq = [...rows].sort((a,b) => (b.liq - a.liq))[0] || null;
+    const byLiq = [...rows].sort((a: DsRow, b: DsRow) => (b.liq - a.liq))[0] || null;
 
     const QUOTES = ["USDC","USDT","WETH","SOL","WBTC","ETH","BUSD"];
-    const rowsPreferred = rows.filter(r => QUOTES.includes(String(r.quote || "").toUpperCase()));
+    const rowsPreferred = rows.filter((r: DsRow) =>
+      QUOTES.includes(String(r.quote || "").toUpperCase())
+    );
     const byPreferredThenLiq = (rowsPreferred.length ? rowsPreferred : rows)
-      .sort((a,b) => (b.liq - a.liq))[0] || null;
+      .sort((a: DsRow, b: DsRow) => (b.liq - a.liq))[0] || null;
 
     ok(res, {
       ok: true,
       queried: { chain, address },
       count: rows.length,
-      top5: rows.sort((a,b)=>b.liq-a.liq).slice(0,5),
+      top5: rows.sort((a: DsRow, b: DsRow) => b.liq - a.liq).slice(0, 5),
       pickByLiq: byLiq,
       pickPreferredThenLiq: byPreferredThenLiq,
     }, 5);
+    return;
+  } catch (e: any) {
+    bad(res, 500, e?.message || String(e));
+    return;
+  }
+}
+
+// --- เพิ่มด้านบนของไฟล์ร่วมกับ imports เดิม ---
+// ไม่มี import เพิ่ม เพราะเราใช้ axios และ helpers ในไฟล์นี้อยู่แล้ว
+
+// ... (โค้ดเดิมด้านบนคงเดิม)
+
+// ==== แทนที่ handler /debug/pipeline เดิมทั้งบล็อค ====
+if (req.method === "GET" && url.pathname === "/debug/pipeline") {
+  try {
+    const chainParam = (url.searchParams.get("chain") ?? url.searchParams.get("b") ?? "").toLowerCase();
+    const addressParam = (url.searchParams.get("address") ?? url.searchParams.get("a") ?? "").toLowerCase();
+
+    const truthy = (v: string | null) => {
+      if (!v) return false;
+      const s = v.toLowerCase();
+      return s === "1" || s === "true" || s === "yes";
+    };
+
+    const upsert = truthy(url.searchParams.get("upsert")) || truthy(url.searchParams.get("r"));
+    const useDs  = truthy(url.searchParams.get("useDs")) || truthy(url.searchParams.get("use"));
+    const auto   = truthy(url.searchParams.get("auto"));
+
+    const chain = chainParam;
+    const address = addressParam;
+    const DIFF_ALERT = Number(url.searchParams.get("diffPct") || 2); // % ที่ถือว่าต่าง
+
+    if (!address) {
+      bad(res, 400, "missing address");
+      return;
+    }
+
+    const t0 = Date.now();
+
+    // 1) สร้าง token หนึ่งตัวจากพารามิเตอร์ (ถ้า Apps Script ไม่มีตัวนี้)
+    const maybeTokens = await readTokensFromAppsScript().catch(() => []);
+    const fromSheet = (maybeTokens || []).find(t => t.contract_address === address && (!chain || t.chain === chain));
+    const token = fromSheet ?? {
+      chain: chain || "sol",
+      contract_address: address,
+      symbol: undefined,
+      decimals: null,
+      coingecko_id: null,
+      cmc_id: null,
+      cmc_slug: null,
+      logo: null,
+      allocationPct: null,
+    };
+
+    // 2) ดึง "ค่าจริงตามโปรดักชัน" ผ่าน fetchAllPrices
+    const prodArr = await fetchAllPrices([token]);
+    const prod = prodArr[0] || null;
+
+    // 3) ดึง Dexscreener ตรงแบบ no-cache (ตรรกะเดียวกับ /debug/ds-why)
+    const apiUrl = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}?_t=${Date.now()}`;
+    const r = await axios.get(apiUrl, {
+      timeout: 15000,
+      headers: { "Cache-Control": "no-cache", "User-Agent": "cron-price-fetcher/1.0" },
+      validateStatus: s => s >= 200 && s < 500,
+    });
+    const pairs = Array.isArray(r.data?.pairs) ? r.data.pairs : [];
+
+    const norm = (p: any) => ({
+      chainId: p.chainId,
+      dexId: p.dexId,
+      pairAddress: p.pairAddress,
+      quote: p?.quoteToken?.symbol,
+      liq: Number(p?.liquidity?.usd ?? p?.liquidityUsd ?? 0),
+      vol24h: Number(p?.volume?.h24 ?? p?.volume24h ?? 0),
+      priceUsd: p?.priceUsd != null ? Number(p.priceUsd) : null,
+    });
+    const rows: DsRow[] = pairs.map(norm);
+
+    // เลือก pool ตาม preferred quotes จาก /debug/ds-why
+    const QUOTES = ["USDC","USDT","WETH","SOL","WBTC","ETH","BUSD"];
+    const rowsPreferred = rows.filter((r: DsRow) =>
+      QUOTES.includes(String(r.quote || "").toUpperCase())
+    );
+    const bestDs = (rowsPreferred.length ? rowsPreferred : rows)
+      .filter((r: DsRow) => r.priceUsd != null)
+      .sort((a: DsRow, b: DsRow) => (b.liq - a.liq))[0] || null;
+
+    // 4) เตรียมผลลัพธ์
+
+    // คำนวณ diff ระหว่าง prod กับ DS สด
+    const prodPrice = prod?.priceUsd != null ? Number(prod.priceUsd) : null;
+    const dsPrice = bestDs?.priceUsd != null ? Number(bestDs.priceUsd) : null;
+    let diffPct: number | null = null;
+    let alert = false;
+    if (prodPrice != null && dsPrice != null && dsPrice > 0) {
+      diffPct = Math.abs((prodPrice - dsPrice) / dsPrice) * 100;
+      alert = diffPct > DIFF_ALERT;
+    }
+
+    // Decide and perform upsert (supports ?useDs=1 and/or ?auto=1 to write DS when diff exceeds threshold)
+    let upserted = false;
+    let upsertSource: "ds" | "prod" | null = null;
+    if (upsert) {
+      const shouldUseDs = (useDs || (auto && alert)) && bestDs?.priceUsd != null;
+
+      const writeRow: PriceResult | null =
+        shouldUseDs && prod
+          ? {
+              chain: (prod.chain ?? token.chain) as string,
+              address: (prod.address ?? token.contract_address) as string,
+              priceUsd: Number(bestDs!.priceUsd),
+              source: "dexscreener",
+              at: new Date().toISOString(),
+            }
+          : (prod
+              ? {
+                  chain: prod.chain as string,
+                  address: prod.address as string,
+                  priceUsd: (prod.priceUsd ?? null) as number | null,
+                  source: (prod.source ?? null) as any,
+                  at: (prod.at ?? new Date().toISOString()) as string,
+                }
+              : null);
+
+      if (writeRow) {
+        await storeResults([writeRow]);
+        upserted = true;
+        upsertSource = shouldUseDs ? "ds" : "prod";
+      }
+    }
+
+    ok(res, {
+      ok: true,
+      chain: token.chain,
+      address: token.contract_address,
+      ms: Date.now() - t0,
+      prod: prod ?? null,                    // สิ่งที่โปรดักชันเลือกใช้จริง
+      dsBest: bestDs ?? null,                // สิ่งที่ DS สด ๆ เลือก (preferred quotes + liq)
+      diffPct,
+      alert,                                 // true ถ้าต่างเกิน DIFF_ALERT %
+      top5: rows.sort((a: DsRow, b: DsRow) => b.liq - a.liq).slice(0, 5),
+      apiUrl,                                // ให้เห็น URL ที่ยิงจริง
+      upserted,
+      upsertSource,
+    }, 3);
     return;
   } catch (e: any) {
     bad(res, 500, e?.message || String(e));
