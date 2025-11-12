@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@8.15.4",
   "description": "Cron job for fetching crypto prices from Dexscreener, CoinGecko, and CMC using data from Google Sheets.",
   "engines": {
     "node": ">=20"
