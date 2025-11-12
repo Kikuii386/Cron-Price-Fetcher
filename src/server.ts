@@ -130,7 +130,8 @@ async function runOnceInstrumented(): Promise<void> {
     summary.tokens = { count: tokens.length, ms: Date.now() - t1 };
 
     const t2 = Date.now();
-    const prices = await fetchAllPrices(tokens);
+    // Always fetch fresh prices (bypass cache)
+    const prices = await fetchAllPrices(tokens, { bypassCache: true });
     const sampleRows = prices
       .filter(p => p && p.priceUsd != null)
       .slice(0, 5)
@@ -154,6 +155,7 @@ async function runOnceInstrumented(): Promise<void> {
     const t3 = Date.now();
     await storeResults(prices);
     summary.store = { ms: Date.now() - t3 };
+    summary.finishedAt = new Date().toISOString();
 
     summary.ok = true;
     summary.totalMs = Date.now() - t0;
@@ -161,6 +163,7 @@ async function runOnceInstrumented(): Promise<void> {
   } catch (e: any) {
     summary.ok = false;
     summary.error = e?.message || String(e);
+    summary.finishedAt = new Date().toISOString();
     summary.totalMs = Date.now() - t0;
     LAST_RUN_SUMMARY = summary;
   }
@@ -233,9 +236,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // Blocking mode (legacy): execute and return summary
-      const prices = await runOnce();
-
+      // Blocking mode: execute instrumented and return summary
+      await runOnceInstrumented();
       if (silent) {
         res.writeHead(204, {
           "Content-Length": "0",
@@ -246,34 +248,7 @@ const server = http.createServer(async (req, res) => {
         res.end();
         return;
       }
-
-      const summary = summarize(prices);
-      const focus = (url.searchParams.get("focus") || "").toLowerCase().trim();
-      let focusRow: any = null;
-      if (focus) {
-        const match = prices.find(p => (p.address || "").toLowerCase() === focus);
-        if (match) {
-          focusRow = {
-            chain: match.chain,
-            address: match.address,
-            price_usd: typeof match.priceUsd === 'number' ? match.priceUsd : Number(match.priceUsd),
-            source: match.source,
-          };
-        }
-      }
-      ok(
-        res,
-        {
-          ok: true,
-          total: summary.totals.total,
-          count: summary.totals.withPrice,
-          nulls: summary.totals.nulls,
-          bySource: summary.bySource,
-          at: new Date().toISOString(),
-          ...(focus ? { focus: focusRow } : {}),
-        },
-        30
-      );
+      ok(res, { ok: true, ...LAST_RUN_SUMMARY }, 0);
       return;
     }
 
@@ -498,9 +473,10 @@ if (req.method === "GET" && url.pathname === "/debug/sb") {
       }
     }
 
-// Debug: show last run summary if available
+// Debug: show last run summary if available, always include asOf timestamp
 if (req.method === 'GET' && url.pathname === '/debug/last-run') {
-  ok(res, LAST_RUN_SUMMARY ?? { ok: false, error: 'no run yet' }, 0);
+  const body = LAST_RUN_SUMMARY ?? { ok: false, error: 'no run yet' };
+  ok(res, { asOf: new Date().toISOString(), ...body }, 0);
   return;
 }
 
