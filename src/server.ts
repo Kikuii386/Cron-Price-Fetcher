@@ -346,24 +346,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Debug: quick CoinGecko probe to verify connectivity and ids
+    // Debug: quick CoinGecko probe to verify connectivity and ids (supports ?id=mochi-3)
     if (req.method === "GET" && url.pathname === "/debug/gecko") {
       try {
-        const tokens = await readTokensFromAppsScript();
-        const ids = Array.from(
-          new Set(
-            tokens
-              .map((t) => t.coingecko_id)
-              .filter((x): x is string => !!x)
-          )
-        ).slice(0, 25); // probe first 25 ids
+        // If user supplies an explicit id or comma-separated ids, prefer those.
+        const idParam = url.searchParams.get("id") || url.searchParams.get("ids");
+        let ids: string[] = [];
+
+        if (idParam && idParam.trim().length > 0) {
+          ids = idParam
+            .split(",")
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+        } else {
+          // Fallback: collect coingecko_id from Apps Script tokens
+          const tokens = await readTokensFromAppsScript();
+          ids = Array.from(
+            new Set(
+              tokens
+                .map((t) => t.coingecko_id)
+                .filter((x): x is string => !!x)
+            )
+          ).slice(0, 25); // probe first 25 ids
+        }
 
         if (ids.length === 0) {
-          ok(res, { ok: true, note: "no coingecko_id in tokens" });
+          ok(res, { ok: true, note: "no coingecko_id provided or in tokens" });
           return;
         }
 
-        const urlCg = `https://api.coingecko.com/api/v3/simple/price?ids=${ids.map(encodeURIComponent).join(",")}&vs_currencies=usd`;
+        const urlCg = `https://api.coingecko.com/api/v3/simple/price?ids=${ids
+          .map(encodeURIComponent)
+          .join(",")}&vs_currencies=usd`;
         const cg = await axios.get(urlCg, {
           timeout: 15000,
           headers: { Accept: "application/json", "User-Agent": "cron-price-fetcher/1.0" },
@@ -380,8 +394,8 @@ const server = http.createServer(async (req, res) => {
         ok(res, {
           ok: true,
           status: cg.status,
-          idsRequested: ids.length,
-          idsReturned: have.length,
+          idsRequested: ids,
+          idsReturned: have,
           sample,
         });
         return;
