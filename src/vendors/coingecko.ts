@@ -7,7 +7,8 @@ const GECKO_BATCH = Math.max(1, Math.min(250, Number(process.env.GECKO_BATCH || 
 const GECKO_DELAY_MS = Math.max(0, Number(process.env.GECKO_DELAY_MS || 250));
 const GECKO_MAX_RETRIES = Math.max(0, Number(process.env.GECKO_MAX_RETRIES || 3));
 
-function geckoHeaders() {
+let geckoKeyLogged = false;
+function geckoHeaders(): Record<string, string> {
   const apiKey = process.env.COINGECKO_API_KEY || "";
   const h: Record<string, string> = {
     Accept: "application/json",
@@ -16,7 +17,17 @@ function geckoHeaders() {
     Pragma: "no-cache",
     "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
   };
-  if (apiKey) h["x-cg-api-key"] = apiKey; // supported on CG pro/free key
+  if (apiKey) {
+    h["x-cg-api-key"] = apiKey; // supported on CG pro/free key
+    if (!geckoKeyLogged) {
+      const suffix = apiKey.length > 6 ? apiKey.slice(-6) : apiKey;
+      console.log("[gecko] using API key (len=%d, suffix=%s)", apiKey.length, suffix);
+      geckoKeyLogged = true;
+    }
+  } else if (!geckoKeyLogged) {
+    console.warn("[gecko] COINGECKO_API_KEY is not set, using public rate limits");
+    geckoKeyLogged = true;
+  }
   return h;
 }
 
@@ -62,6 +73,8 @@ export async function fetchCoingeckoPriceById(id: string): Promise<number | null
       },
     }
   ).catch(() => null);
+  const status = (res as any)?.status ?? "no-response";
+  console.log("[gecko/single] id=%s status=%s", id, status);
   const v = (res as any)?.data?.[id?.toLowerCase?.() ?? id]?.usd;
   return v != null ? Number(v) : null;
 }
@@ -109,6 +122,8 @@ export async function fetchCoingeckoBatchByIds(
         },
       }
     ).catch(() => null);
+    const status = (res as any)?.status ?? "no-response";
+    console.log("[gecko/batch] ids=%d status=%s", part.length, status);
 
     const data = (res as any)?.data || {};
     for (const id of part) {

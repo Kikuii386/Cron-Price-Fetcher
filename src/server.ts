@@ -378,9 +378,19 @@ const server = http.createServer(async (req, res) => {
         const urlCg = `https://api.coingecko.com/api/v3/simple/price?ids=${ids
           .map(encodeURIComponent)
           .join(",")}&vs_currencies=usd`;
+
+        const apiKey = process.env.COINGECKO_API_KEY;
+        const headers: Record<string, string> = {
+          Accept: "application/json",
+          "User-Agent": "cron-price-fetcher/1.0",
+        };
+        if (apiKey) {
+          headers["x-cg-api-key"] = apiKey;
+        }
+
         const cg = await axios.get(urlCg, {
           timeout: 15000,
-          headers: { Accept: "application/json", "User-Agent": "cron-price-fetcher/1.0" },
+          headers,
           validateStatus: (s) => s >= 200 && s < 500,
         });
 
