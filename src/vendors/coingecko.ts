@@ -3,7 +3,7 @@ import pRetry from "p-retry";
 import crypto from "node:crypto";
 import { CFG } from "../config.js";
 
-const GECKO_BATCH = Math.max(1, Math.min(250, Number(process.env.GECKO_BATCH || 150)));
+const GECKO_BATCH = Math.max(1, Math.min(250, Number(process.env.GECKO_BATCH || 250)));
 const GECKO_DELAY_MS = Math.max(0, Number(process.env.GECKO_DELAY_MS || 250));
 const GECKO_MAX_RETRIES = Math.max(0, Number(process.env.GECKO_MAX_RETRIES || 3));
 
