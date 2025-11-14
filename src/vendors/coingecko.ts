@@ -7,28 +7,14 @@ const GECKO_BATCH = Math.max(1, Math.min(250, Number(process.env.GECKO_BATCH || 
 const GECKO_DELAY_MS = Math.max(0, Number(process.env.GECKO_DELAY_MS || 250));
 const GECKO_MAX_RETRIES = Math.max(0, Number(process.env.GECKO_MAX_RETRIES || 3));
 
-let geckoKeyLogged = false;
 function geckoHeaders(): Record<string, string> {
-  const apiKey = process.env.COINGECKO_API_KEY || "";
-  const h: Record<string, string> = {
+  return {
     Accept: "application/json",
     "User-Agent": "cron-price-fetcher/1.0",
     "Cache-Control": "no-cache, no-store, max-age=0",
     Pragma: "no-cache",
     "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
   };
-  if (apiKey) {
-    h["x-cg-api-key"] = apiKey; // supported on CG pro/free key
-    if (!geckoKeyLogged) {
-      const suffix = apiKey.length > 6 ? apiKey.slice(-6) : apiKey;
-      console.log("[gecko] using API key (len=%d, suffix=%s)", apiKey.length, suffix);
-      geckoKeyLogged = true;
-    }
-  } else if (!geckoKeyLogged) {
-    console.warn("[gecko] COINGECKO_API_KEY is not set, using public rate limits");
-    geckoKeyLogged = true;
-  }
-  return h;
 }
 
 /**

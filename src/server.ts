@@ -20,14 +20,6 @@ import { createClient } from '@supabase/supabase-js';
 
 // --- Helpers ---
 
-// DEBUG ENV on boot
-const gk = process.env.COINGECKO_API_KEY || "";
-if (gk) {
-  console.log("[env] COINGECKO_API_KEY detected (len=%d, suffix=%s)", gk.length, gk.slice(-6));
-} else {
-  console.log("[env] COINGECKO_API_KEY missing or empty");
-}
-
 function json(
   res: http.ServerResponse,
   status: number,
@@ -388,20 +380,14 @@ const server = http.createServer(async (req, res) => {
           .map(encodeURIComponent)
           .join(",")}&vs_currencies=usd`;
 
-        const apiKey = process.env.COINGECKO_API_KEY;
-        const headers: Record<string, string> = {
-          Accept: "application/json",
-          "User-Agent": "cron-price-fetcher/1.0",
-        };
-        if (apiKey) {
-          headers["x-cg-api-key"] = apiKey;
-        }
-
         const cg = await axios.get(urlCg, {
           timeout: 15000,
-          headers,
+          headers: {
+          Accept: "application/json",
+            "User-Agent": "cron-price-fetcher/1.0",
+        },
           validateStatus: (s) => s >= 200 && s < 500,
-        });
+});
 
         const body = cg.data || {};
         const have = Object.keys(body);
