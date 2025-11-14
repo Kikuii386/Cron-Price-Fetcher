@@ -19,6 +19,15 @@ export type DsRow = {
 import { createClient } from '@supabase/supabase-js';
 
 // --- Helpers ---
+
+// DEBUG ENV on boot
+const gk = process.env.COINGECKO_API_KEY || "";
+if (gk) {
+  console.log("[env] COINGECKO_API_KEY detected (len=%d, suffix=%s)", gk.length, gk.slice(-6));
+} else {
+  console.log("[env] COINGECKO_API_KEY missing or empty");
+}
+
 function json(
   res: http.ServerResponse,
   status: number,
@@ -592,7 +601,6 @@ if (req.method === "GET" && url.pathname === "/debug/pipeline") {
 
     const chain = chainParam;
     const address = addressParam;
-    const DIFF_ALERT = Number(url.searchParams.get("diffPct") || 2); // % ที่ถือว่าต่าง
 
     if (!address) {
       bad(res, 400, "missing address");
@@ -658,14 +666,15 @@ if (req.method === "GET" && url.pathname === "/debug/pipeline") {
     let alert = false;
     if (prodPrice != null && dsPrice != null && dsPrice > 0) {
       diffPct = Math.abs((prodPrice - dsPrice) / dsPrice) * 100;
-      alert = diffPct > DIFF_ALERT;
+      // alert kept for backward compatibility but no longer used to gate upserts
+      alert = false;
     }
 
     // Decide and perform upsert (supports ?useDs=1 and/or ?auto=1 to write DS when diff exceeds threshold)
     let upserted = false;
     let upsertSource: "ds" | "prod" | null = null;
     if (upsert) {
-      const shouldUseDs = (useDs || (auto && alert)) && bestDs?.priceUsd != null;
+      const shouldUseDs = (useDs || auto) && bestDs?.priceUsd != null;
 
       const writeRow: PriceResult | null =
         shouldUseDs && prod

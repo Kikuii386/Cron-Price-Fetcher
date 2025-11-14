@@ -39,7 +39,7 @@ function computeMedian(nums: number[]): number | null {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
-function topByLiquidity(pairs: DexPair[], minLiqUsd = 50): DexPair[] {
+function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
   const rows = (pairs || [])
     .filter(p => p && p.priceUsd != null)
     .map(p => ({
@@ -58,7 +58,7 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 50): DexPair[] {
  */
 function pickBestPrice(pairs: DexPair[], opts?: { topN?: number; minLiqUsd?: number }): number | null {
   const topN = Math.max(1, Math.min(10, opts?.topN ?? 3));
-  const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 50);
+  const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 0);
   const rows = topByLiquidity(pairs, minLiqUsd);
   if (!rows.length) return null;
   const slice = rows.slice(0, topN);
@@ -206,7 +206,7 @@ export async function fetchDexscreenerBatchByTokens(
 
     // pick best pair and assign price (store under lowercase key)
     for (const c of chunk) {
-      const price = grouped[c.key] ? pickBestPrice(grouped[c.key], { topN: 3, minLiqUsd: 50 }) : null;
+      const price = grouped[c.key] ? pickBestPrice(grouped[c.key], { topN: 3, minLiqUsd: 0 }) : null;
       out[c.key] = price != null && Number.isFinite(price) ? price : null;
     }
 
