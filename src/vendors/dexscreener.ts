@@ -39,6 +39,14 @@ function computeMedian(nums: number[]): number | null {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
+const TRUSTED_QUOTES = new Set([
+  "USDC", "USDT", "DAI", // Stablecoins
+  "WETH", "ETH",         // Ethereum
+  "SOL", "WSOL",         // Solana
+  "WBTC", "BTC",         // Bitcoin
+  "BUSD", "USDbC"        // Others
+]);
+
 function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
   const rows = (pairs || [])
     .filter(p => p && p.priceUsd != null)
@@ -46,46 +54,51 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
       ...p,
       _liq: toNum(p?.liquidity?.usd, 0),
       _price: toNum(p?.priceUsd, NaN),
+      // ดึง Symbol ของ Quote Token มาเตรียมไว้เช็ค
+      _quoteSym: p?.quoteToken?.symbol?.toUpperCase() || ""
     }))
     .filter(p => Number.isFinite(p._price) && p._liq >= minLiqUsd)
-    .sort((a:any, b:any) => b._liq - a._liq);
-  return rows as unknown as DexPair[];
-}
+    .sort((a: any, b: any) => {
+      // Logic ใหม่: เช็คว่าเป็น Trusted Quote หรือไม่?
+      const aTrusted = TRUSTED_QUOTES.has(a._quoteSym);
+      const bTrusted = TRUSTED_QUOTES.has(b._quoteSym);
 
-/**
- * Return a robust USD price: median of top-N liquidity pools.
- * If fewer rows than N, median of what's available. If none, null.
- */
-function pickBestPrice(pairs: DexPair[], opts?: { topN?: number; minLiqUsd?: number }): number | null {
-  const topN = Math.max(1, Math.min(10, opts?.topN ?? 3));
-  const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 0);
-  const rows = topByLiquidity(pairs, minLiqUsd);
-  if (!rows.length) return null;
-  const slice = rows.slice(0, topN);
-  const prices = slice.map((r:any) => toNum(r.priceUsd, NaN)).filter(Number.isFinite);
-  return computeMedian(prices);
+      // ถ้าคนนึง Trusted แต่อีกคนไม่ ให้คน Trusted ชนะเสมอ
+      if (aTrusted && !bTrusted) return -1;
+      if (!aTrusted && bTrusted) return 1;
+
+      // ถ้าสถานะเหมือนกัน (Trusted ทั้งคู่ หรือ ไม่ใช่ทั้งคู่) ให้วัดกันที่ Liquidity
+      return b._liq - a._liq;
+    });
+
+  return rows as unknown as DexPair[];
 }
 
 /**
  * Choose the most reliable pair: prioritize highest USD liquidity, then 24h volume, then has price.
  */
-function pickBestPair(pairs: DexPair[] = []): DexPair | null {
-  // DEPRECATED: kept for compatibility in debug helpers. Use pickBestPrice() for price selection.
-  const candidates = pairs.filter((p) => p && p.priceUsd != null);
-  if (!candidates.length) return null;
-  return candidates
-    .sort((a, b) => {
-      const liqA = Number(a?.liquidity?.usd || 0);
-      const liqB = Number(b?.liquidity?.usd || 0);
-      if (liqB !== liqA) return liqB - liqA;
-      const volA = Number(a?.volume?.h24 || 0);
-      const volB = Number(b?.volume?.h24 || 0);
-      if (volB !== volA) return volB - volA;
-      // as a last resort, prefer those with marketCap/fdv present
-      const capA = Number(a?.marketCap || a?.fdv || 0);
-      const capB = Number(b?.marketCap || b?.fdv || 0);
-      return capB - capA;
-    })[0];
+function pickBestPrice(pairs: DexPair[], opts?: { topN?: number; minLiqUsd?: number }): number | null {
+  // ใช้ topN = 1 เพื่อเอาตัวที่ Liquidity สูงสุดตัวเดียว (Winner Takes All)
+  const topN = Math.max(1, Math.min(10, opts?.topN ?? 1));
+  const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 0);
+  
+  let rows = topByLiquidity(pairs, minLiqUsd);
+  if (!rows.length) return null;
+
+  // กรองเฉพาะ Trusted Quote
+  const trustedRows = rows.filter((r: any) => TRUSTED_QUOTES.has(r._quoteSym));
+  
+  if (trustedRows.length > 0) {
+    // *** แก้ตรงนี้ ***
+    // ใช้ (r as any)._price หรือ Number(r.priceUsd)
+    return (trustedRows[0] as any)._price;
+  }
+
+  // กรณีไม่เจอ Trusted Quote เลย ให้ใช้ Logic เดิม (Median)
+  const slice = rows.slice(0, topN);
+  const prices = slice.map((r:any) => toNum(r.priceUsd, NaN)).filter(Number.isFinite);
+  
+  return computeMedian(prices);
 }
 
 /**
@@ -134,7 +147,7 @@ export async function fetchDexscreenerQuote(address: string): Promise<{
   const pairs = await fetchDexscreenerPairsByToken(address);
   const rows = topByLiquidity(pairs, 50);
   if (!rows.length) return { price: null };
-  const price = pickBestPrice(pairs, { topN: 3, minLiqUsd: 50 });
+  const price = pickBestPrice(pairs, { topN: 1, minLiqUsd: 0 });
   const best = rows[0] as DexPair;
   return {
     price: price != null && Number.isFinite(price) ? price : null,
@@ -206,7 +219,7 @@ export async function fetchDexscreenerBatchByTokens(
 
     // pick best pair and assign price (store under lowercase key)
     for (const c of chunk) {
-      const price = grouped[c.key] ? pickBestPrice(grouped[c.key], { topN: 3, minLiqUsd: 0 }) : null;
+      const price = grouped[c.key] ? pickBestPrice(grouped[c.key], { topN: 1, minLiqUsd: 0 }) : null;
       out[c.key] = price != null && Number.isFinite(price) ? price : null;
     }
 
