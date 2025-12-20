@@ -23,13 +23,23 @@ export type DexTokensResponse = {
   pairs?: DexPair[];
 };
 
+// src/vendors/dexscreener.ts
+export interface DexPriceData {
+  // ต้องมีคำว่า export
+  priceUsd: number | null;
+  priceChangeH24: number | null;
+  marketCap: number | null;
+}
+
 /**
  * Utilities for robust price selection without hardcoding quote symbols.
  * Strategy: take the median of top-N liquidity pools (defaults: N=3, minLiq=$50).
  */
-function toNum(v: any, d = 0): number {
+function toNum(v: any, d: number | null = 0): number | null {
   const n = Number(v);
-  return Number.isFinite(n) ? n : d;
+  return v !== null && v !== undefined && v !== "" && Number.isFinite(n)
+    ? n
+    : d;
 }
 
 function computeMedian(nums: number[]): number | null {
@@ -58,22 +68,17 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
     .filter((p) => p && p.priceUsd != null)
     .map((p) => ({
       ...p,
-      _liq: toNum(p?.liquidity?.usd, 0),
-      _price: toNum(p?.priceUsd, NaN),
-      // ดึง Symbol ของ Quote Token มาเตรียมไว้เช็ค
+      _liq: toNum(p?.liquidity?.usd, 0) as number,
+      _price: toNum(p?.priceUsd, NaN) as number,
       _quoteSym: p?.quoteToken?.symbol?.toUpperCase() || "",
     }))
-    .filter((p) => Number.isFinite(p._price) && p._liq >= minLiqUsd)
+    // เปลี่ยนจาก (p) เป็น (p: any)
+    .filter((p: any) => Number.isFinite(p._price) && p._liq >= minLiqUsd)
     .sort((a: any, b: any) => {
-      // Logic ใหม่: เช็คว่าเป็น Trusted Quote หรือไม่?
       const aTrusted = TRUSTED_QUOTES.has(a._quoteSym);
       const bTrusted = TRUSTED_QUOTES.has(b._quoteSym);
-
-      // ถ้าคนนึง Trusted แต่อีกคนไม่ ให้คน Trusted ชนะเสมอ
       if (aTrusted && !bTrusted) return -1;
       if (!aTrusted && bTrusted) return 1;
-
-      // ถ้าสถานะเหมือนกัน (Trusted ทั้งคู่ หรือ ไม่ใช่ทั้งคู่) ให้วัดกันที่ Liquidity
       return b._liq - a._liq;
     });
 
@@ -83,33 +88,80 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
 /**
  * Choose the most reliable pair: prioritize highest USD liquidity, then 24h volume, then has price.
  */
-function pickBestPrice(
+/**
+ * แก้ไขจาก pickBestPrice เดิม ให้คืนค่าข้อมูลครบชุด
+ */
+
+const MAX_SAFE_MCAP = 10_000_000_000_000; // 10 Trillion USD (เกินกว่านี้คือ Glitch)
+const MAX_SAFE_PRICE = 100_000_000;
+/**
+ * เลือกราคาที่ดีที่สุด + กรองข้อมูลขยะ + หา Market Cap สำรอง
+ */
+function pickBestPriceData(
   pairs: DexPair[],
   opts?: { topN?: number; minLiqUsd?: number }
-): number | null {
-  // ใช้ topN = 1 เพื่อเอาตัวที่ Liquidity สูงสุดตัวเดียว (Winner Takes All)
-  const topN = Math.max(1, Math.min(10, opts?.topN ?? 1));
+): DexPriceData {
+  // 1. ตั้งค่า Liquidity ขั้นต่ำ (แนะนำ $50 เพื่อกัน Pool ผีที่สร้างมาหลอก)
   const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 0);
 
+  // 2. ดึง Pair มาเรียงลำดับ (Liquidity สูงสุด + Trusted Quote ขึ้นก่อน)
   let rows = topByLiquidity(pairs, minLiqUsd);
-  if (!rows.length) return null;
 
-  // กรองเฉพาะ Trusted Quote
-  const trustedRows = rows.filter((r: any) => TRUSTED_QUOTES.has(r._quoteSym));
+  // 3. 🛡️ SANITY CHECK: กรอง Pair ที่ราคาหรือ MC เวอร์เกินจริง
+  rows = rows.filter((p) => {
+    const price = toNum(p.priceUsd, 0);
+    const mcap = p.marketCap
+      ? toNum(p.marketCap, 0)
+      : p.fdv
+      ? toNum(p.fdv, 0)
+      : 0;
 
-  if (trustedRows.length > 0) {
-    // *** แก้ตรงนี้ ***
-    // ใช้ (r as any)._price หรือ Number(r.priceUsd)
-    return (trustedRows[0] as any)._price;
+    // กฎ: ราคาสูงเกิน หรือ MC สูงระดับ Quadrillion ให้ดีดทิ้ง
+    if (price && price > MAX_SAFE_PRICE) return false;
+    if (mcap && mcap > MAX_SAFE_MCAP) return false;
+
+    return true;
+  });
+
+  // ถ้ากรองแล้วไม่เหลืออะไรเลย ให้คืนค่าว่าง
+  if (!rows.length)
+    return { priceUsd: null, priceChangeH24: null, marketCap: null };
+
+  const bestPair = rows[0] as any;
+
+  // 4. 🔄 MC FALLBACK: วนหา Market Cap จาก Pair รอง (กรณี Pair แรกไม่มี)
+  let foundMarketCap: number | null = null;
+  for (const p of rows as any[]) {
+    // เช็ค MarketCap ก่อน
+    if (p.marketCap != null) {
+      const val = Number(p.marketCap);
+      if (val < MAX_SAFE_MCAP) {
+        // เช็คซ้ำอีกทีเพื่อความชัวร์
+        foundMarketCap = val;
+        break;
+      }
+    }
+    // ถ้าไม่มี ให้ดู FDV
+    if (p.fdv != null) {
+      const val = Number(p.fdv);
+      if (val < MAX_SAFE_MCAP) {
+        foundMarketCap = val;
+        break;
+      }
+    }
   }
 
-  // กรณีไม่เจอ Trusted Quote เลย ให้ใช้ Logic เดิม (Median)
-  const slice = rows.slice(0, topN);
-  const prices = slice
-    .map((r: any) => toNum(r.priceUsd, NaN))
-    .filter(Number.isFinite);
+  // Debug Log (เปิดไว้ช่วยเช็คได้ครับ ถ้าเสถียรแล้วค่อยลบออก)
+  // console.log(`[Dex] Best: ${bestPair.baseToken?.symbol} ($${bestPair.priceUsd}) | MC Found: ${foundMarketCap}`);
 
-  return computeMedian(prices);
+  return {
+    priceUsd: toNum(bestPair.priceUsd, null),
+    priceChangeH24:
+      bestPair.priceChange?.h24 != null
+        ? Number(bestPair.priceChange.h24)
+        : null,
+    marketCap: foundMarketCap,
+  };
 }
 
 /**
@@ -145,22 +197,22 @@ export async function fetchDexscreenerPairsByToken(
  */
 export async function fetchDexscreenerPrice(
   address: string
-): Promise<number | null> {
+): Promise<DexPriceData> {
   return await pRetry(
     async () => {
       const pairs = await fetchDexscreenerPairsByToken(address);
-      const price = pickBestPrice(pairs);
-      return price != null && Number.isFinite(price) ? price : null;
+      return pickBestPriceData(pairs); // เรียกใช้ฟังก์ชันที่เราแก้ใหม่
     },
     { retries: 2, factor: 2 }
   );
 }
 
 /**
- * Helper for debugging/extra metadata consumers.
+ * Helper สำหรับดึงข้อมูล Metadata พร้อมราคา, Market Cap และ Price Change 24h
  */
 export async function fetchDexscreenerQuote(address: string): Promise<{
   price: number | null;
+  priceChangeH24?: number | null; // เพิ่มใหม่
   marketCap?: number | null;
   volume24h?: number | null;
   pairUrl?: string;
@@ -170,12 +222,19 @@ export async function fetchDexscreenerQuote(address: string): Promise<{
 }> {
   const pairs = await fetchDexscreenerPairsByToken(address);
   const rows = topByLiquidity(pairs, 50);
+
   if (!rows.length) return { price: null };
-  const price = pickBestPrice(pairs, { topN: 1, minLiqUsd: 0 });
-  const best = rows[0] as DexPair;
+
+  // 1. เรียกใช้ฟังก์ชันที่ปรับปรุงใหม่ (คืนค่าเป็น Object ครบชุด)
+  const data = pickBestPriceData(pairs, { topN: 1, minLiqUsd: 10 });
+
+  // 2. เลือก Pair ที่ดีที่สุดอันดับ 1 มาแกะข้อมูลดิบอื่นๆ
+  const best = rows[0] as any;
+
   return {
-    price: price != null && Number.isFinite(price) ? price : null,
-    marketCap: best.marketCap ?? best.fdv ?? null,
+    price: data.priceUsd, // ใช้ค่าจาก pickBestPriceData
+    priceChangeH24: data.priceChangeH24, // ใช้ค่าจาก pickBestPriceData
+    marketCap: data.marketCap, // ใช้ค่าจาก pickBestPriceData (ที่มี logic เลือก MC หรือ FDV)
     volume24h: best.volume?.h24 ?? null,
     pairUrl: best.url,
     dexId: best.dexId,
@@ -199,7 +258,7 @@ export async function fetchDexscreenerBatchByTokens(
     timeoutMs?: number;
     retries?: number;
   }
-): Promise<Record<string, number | null>> {
+): Promise<Record<string, DexPriceData | null>> {
   const batchSize = Math.max(1, Math.min(30, opts?.batchSize ?? 30));
   const delayMs = Math.max(0, opts?.delayMs ?? 300);
   const timeoutMs = opts?.timeoutMs ?? CFG.api.timeoutMs;
@@ -224,7 +283,7 @@ export async function fetchDexscreenerBatchByTokens(
   }
 
   // prefill output
-  const out: Record<string, number | null> = {};
+  const out: Record<string, DexPriceData | null> = {};
   for (const r of uniq) out[r.key] = null;
 
   for (let i = 0; i < uniq.length; i += batchSize) {
@@ -261,32 +320,27 @@ export async function fetchDexscreenerBatchByTokens(
       if (setReq.has(bKey)) (grouped[bKey] ||= []).push(p);
     }
 
-    // pick best pair and assign price (store under lowercase key)
     for (const c of chunk) {
-      const price = grouped[c.key]
-        ? pickBestPrice(grouped[c.key], { topN: 1, minLiqUsd: 0 })
-        : null;
-      out[c.key] = price != null && Number.isFinite(price) ? price : null;
+      const data = grouped[c.key]
+        ? pickBestPriceData(grouped[c.key], { topN: 1, minLiqUsd: 0 })
+        : { priceUsd: null, priceChangeH24: null, marketCap: null };
+      out[c.key] = data;
     }
 
-    // Fallback: if batch returned empty pairs or we couldn't assign any price,
-    // try per-address single endpoint to recover some results.
-    if (!pairs.length || chunk.every((c) => out[c.key] == null)) {
+    if (!pairs.length || chunk.every((c) => out[c.key]?.priceUsd == null)) {
       for (const c of chunk) {
         try {
-          const price = await pRetry(() => fetchDexscreenerPrice(c.original), {
+          const data = await pRetry(() => fetchDexscreenerPrice(c.original), {
             retries,
             factor: 2,
           });
-          if (price != null) out[c.key] = price;
-        } catch {}
+          if (data && data.priceUsd != null) {
+            out[c.key] = data;
+          }
+        } catch (err) {}
       }
     }
-
-    if (delayMs > 0 && i + batchSize < uniq.length) {
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
+    // ...
   }
-
   return out;
 }

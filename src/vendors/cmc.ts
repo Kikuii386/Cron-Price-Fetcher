@@ -8,26 +8,34 @@ import crypto from "node:crypto";
 // Order: data-api by slug → data-api by id (from HTML) → __NEXT_DATA__ parse → DOM fallback
 
 const TIMEOUT = () => CFG.api.timeoutMs || 12000;
-function HEADERS_JSON() {
+
+// ✅ 1. เพิ่ม Headers เพื่อป้องกันการโดนบล็อก (Anti-Bot)
+function HEADERS_COMMON() {
   return {
     "user-agent":
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    accept: "application/json",
+    "accept-language": "en-US,en;q=0.9",
+    "Referer": "https://coinmarketcap.com/",
+    "Origin": "https://coinmarketcap.com",
     "Cache-Control": "no-cache, no-store, max-age=0",
-    Pragma: "no-cache",
+    "Pragma": "no-cache",
     "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
   };
 }
+
+function HEADERS_JSON() {
+  return {
+    ...HEADERS_COMMON(),
+    accept: "application/json, text/plain, */*",
+  };
+}
+
 function HEADERS_HTML() {
   return {
-    "user-agent":
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    ...HEADERS_COMMON(),
     accept:
       "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "accept-language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache, no-store, max-age=0",
-    Pragma: "no-cache",
-    "X-Request-Id": (crypto.randomUUID?.() || String(Date.now())),
+    "Upgrade-Insecure-Requests": "1",
   };
 }
 
@@ -47,43 +55,81 @@ function toNum(x: any): number | null {
   return null;
 }
 
-function readUsdPriceFromQuoteStruct(obj: any): number | null {
-  if (!obj || typeof obj !== "object") return null;
-  const q = obj.USD || obj.usd || (Array.isArray(obj) ? obj.find((x) => x?.name === "USD") : null);
-  if (!q) return null;
-  const cand = toNum(q.price ?? q.lastPrice ?? q.spotPrice ?? q.close ?? q.value);
-  return cand ?? null;
+// ✅ 2. นิยาม Interface ใหม่ให้รองรับข้อมูลครบถ้วน
+export interface CmcPriceData {
+  priceUsd: number | null;
+  priceChangeH24: number | null;
+  marketCap: number | null;
 }
 
-function readUsdPriceFromAny(data: any): number | null {
-  if (!data) return null;
-  // common shapes
-  // 1) { data: [{ quote: { USD: { price } } }] }
+// ✅ 3. ปรับ Logic การแกะข้อมูลให้ดึง 24h Change และ Market Cap
+function readCmcDataFromQuoteStruct(obj: any): CmcPriceData {
+  const empty = { priceUsd: null, priceChangeH24: null, marketCap: null };
+  if (!obj || typeof obj !== "object") return empty;
+  
+  // หา Object ของ USD (บางทีเป็น Key USD, usd หรืออยู่ใน Array)
+  const q = obj.USD || obj.usd || (Array.isArray(obj) ? obj.find((x: any) => x?.name === "USD") : null);
+  if (!q) return empty;
+
+  return {
+    priceUsd: toNum(q.price ?? q.lastPrice ?? q.spotPrice ?? q.close ?? q.value),
+    // รองรับชื่อฟิลด์หลายแบบที่ CMC ชอบใช้สลับกัน
+    priceChangeH24: toNum(q.percentChange24h ?? q.percentChange24H ?? q.priceChange24h ?? q.change24h),
+    marketCap: toNum(q.marketCap ?? q.marketCapUsd ?? q.fullyDilutedMarketCap),
+  };
+}
+
+function readCmcDataFromAny(data: any): CmcPriceData {
+  const empty = { priceUsd: null, priceChangeH24: null, marketCap: null };
+  if (!data) return empty;
+
+  // 1) { data: [{ quote: { USD: { ... } } }] }
   const d1 = Array.isArray(data?.data) ? data.data[0] : null;
   if (d1) {
-    const p = readUsdPriceFromQuoteStruct(d1.quote);
-    if (p != null) return p;
+    const res = readCmcDataFromQuoteStruct(d1.quote);
+    if (res.priceUsd != null) return res;
   }
-  // 2) { data: { <id>: { quote: { USD: { price }}}}
+
+  // 2) { data: { <id>: { quote: { USD: { ... }}}}
   const d2 = data?.data && typeof data.data === "object" ? Object.values<any>(data.data)[0] : null;
   if (d2) {
-    const p = readUsdPriceFromQuoteStruct(d2.quote);
-    if (p != null) return p;
+    const res = readCmcDataFromQuoteStruct(d2.quote);
+    if (res.priceUsd != null) return res;
   }
-  // 3) detail response variants
+
+  // 3) detail response variants (cryptoCurrency object)
   const crypto = data?.data?.cryptoCurrency || data?.data?.cryptoCurrencyBySlug || data?.data;
   if (crypto) {
-    const p1 = readUsdPriceFromQuoteStruct(crypto.quotes || crypto.quote);
-    if (p1 != null) return p1;
+    // ลองหาใน quotes ก่อน
+    const res1 = readCmcDataFromQuoteStruct(crypto.quotes || crypto.quote);
+    if (res1.priceUsd != null) return res1;
+
+    // ถ้าไม่มี quotes ลองหาใน statistics
     const stats = crypto.statistics || data?.data?.detail?.statistics;
     const p2 = toNum(stats?.price ?? stats?.spotPrice);
-    if (p2 != null) return p2;
+    if (p2 != null) {
+      return {
+        priceUsd: p2,
+        priceChangeH24: toNum(stats?.priceChangePercentage24h ?? stats?.priceChange24h),
+        marketCap: toNum(stats?.marketCap ?? stats?.marketCapUsd),
+      };
+    }
   }
-  // 4) direct price field
+
+  // 4) direct price field (fallback สุดท้าย)
   const p3 = toNum(data?.data?.price ?? data?.price);
-  if (p3 != null) return p3;
-  return null;
+  if (p3 != null) {
+    return { 
+      priceUsd: p3, 
+      priceChangeH24: null, 
+      marketCap: null 
+    };
+  }
+  
+  return empty;
 }
+
+// ... (cmcDataApiQuoteBySlug, cmcDataApiQuoteById, fetchHtml เหมือนเดิม แต่ใช้ Headers ใหม่) ...
 
 async function cmcDataApiQuoteBySlug(slug: string) {
   const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/quote/latest?slug=${encodeURIComponent(
@@ -121,7 +167,7 @@ async function fetchHtml(slug: string) {
   return res.data || "";
 }
 
-function parseFromNextData(html: string): number | null {
+function parseFromNextData(html: string): CmcPriceData | null {
   if (!html) return null;
   const $ = cheerio.load(html);
   let raw = ("" + $("#__NEXT_DATA__").first().html()) || ("" + $("#__NEXT_DATA__").first().text()) || "";
@@ -132,7 +178,6 @@ function parseFromNextData(html: string): number | null {
   if (!raw) return null;
   try {
     const j = JSON.parse(raw);
-    // try a few common paths
     const pageProps = j?.props?.pageProps ?? j?.props ?? {};
     const detailRes = pageProps?.detailRes?.data ?? pageProps?.detailRes ?? {};
     const crypto =
@@ -145,19 +190,18 @@ function parseFromNextData(html: string): number | null {
       {};
 
     // quotes
-    const pQ = readUsdPriceFromQuoteStruct(crypto?.quotes || crypto?.quote);
-    if (pQ != null) return pQ;
+    const resQ = readCmcDataFromQuoteStruct(crypto?.quotes || crypto?.quote);
+    if (resQ.priceUsd != null) return resQ;
 
-    // statistics
+    // statistics fallback
     const stats = crypto?.statistics || detailRes?.detail?.statistics || pageProps?.detailRes?.data?.detail?.statistics;
     const pS = toNum(stats?.price ?? stats?.spotPrice);
-    if (pS != null) return pS;
-
-    // scan for price inside JSON string as last resort
-    const m = JSON.stringify(j).match(/"USD"\s*:\s*\{[^}]*?"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)/);
-    if (m) {
-      const v = Number(m[1]);
-      if (Number.isFinite(v)) return v;
+    if (pS != null) {
+      return {
+        priceUsd: pS,
+        priceChangeH24: toNum(stats?.priceChangePercentage24h ?? stats?.priceChange24h),
+        marketCap: toNum(stats?.marketCap ?? stats?.marketCapUsd)
+      };
     }
   } catch {}
   return null;
@@ -172,16 +216,19 @@ function extractIdFromHtml(html: string): number | null {
   return null;
 }
 
-/** Single slug → price */
-export async function fetchCmcPriceBySlug(slug: string): Promise<number | null> {
-  if (!slug) return null;
+// ✅ 4. Main Function: Single slug → CmcPriceData
+export async function fetchCmcPriceBySlug(slug: string): Promise<CmcPriceData> {
+  const empty = { priceUsd: null, priceChangeH24: null, marketCap: null };
+  if (!slug) return empty;
 
   // 1) data-api by slug (fast)
   try {
     const data = await pRetry(() => cmcDataApiQuoteBySlug(slug), { retries: 2, factor: 2 });
-    const p = readUsdPriceFromAny(data);
-    if (p != null) return p;
-  } catch {}
+    const res = readCmcDataFromAny(data);
+    if (res.priceUsd != null) return res;
+  } catch (err: any) {
+    console.error(`[CMC Error] API slug '${slug}':`, err.message);
+  }
 
   // 2) HTML → extract id → data-api by id
   try {
@@ -189,29 +236,31 @@ export async function fetchCmcPriceBySlug(slug: string): Promise<number | null> 
     const id = extractIdFromHtml(html);
     if (id) {
       const data2 = await pRetry(() => cmcDataApiQuoteById(id), { retries: 2, factor: 2 });
-      const p2 = readUsdPriceFromAny(data2);
-      if (p2 != null) return p2;
+      const res2 = readCmcDataFromAny(data2);
+      if (res2.priceUsd != null) return res2;
     }
 
     // 3) __NEXT_DATA__ parse as fallback
-    const p3 = parseFromNextData(html);
-    if (p3 != null) return p3;
-  } catch {}
+    const res3 = parseFromNextData(html);
+    if (res3 && res3.priceUsd != null) return res3;
+  } catch (err: any) {
+    console.error(`[CMC Error] HTML fallback '${slug}':`, err.message);
+  }
 
-  return null;
+  return empty;
 }
 
-/** Batch by slugs with limited concurrency */
+// ✅ 5. Batch Function: Slugs → Record<slug, CmcPriceData>
 export async function fetchCmcBatchBySlugs(
   slugs: string[],
   opts?: { concurrency?: number; delayMs?: number; retries?: number }
-): Promise<Record<string, number | null>> {
+): Promise<Record<string, CmcPriceData | null>> {
   const concurrency = Math.max(1, Math.min(10, opts?.concurrency ?? 4));
   const delayMs = Math.max(0, opts?.delayMs ?? 0);
   const retries = opts?.retries ?? 2;
 
   const uniq = Array.from(new Set(slugs.map((s) => String(s || "").toLowerCase()).filter(Boolean)));
-  const out: Record<string, number | null> = {};
+  const out: Record<string, CmcPriceData | null> = {};
   for (const s of uniq) out[s] = null;
 
   for (let i = 0; i < uniq.length; i += concurrency) {
@@ -226,6 +275,10 @@ export async function fetchCmcBatchBySlugs(
   return out;
 }
 
-// Compatibility stubs (kept so core compiles; we use slug-only in this profile)
-export async function fetchCmcPriceByAddress(_address: string): Promise<number | null> { return null; }
-export async function fetchCmcPriceById(_cmcId?: number | null): Promise<number | null> { return null; }
+// Compatibility stubs
+export async function fetchCmcPriceByAddress(_address: string): Promise<CmcPriceData> { 
+  return { priceUsd: null, priceChangeH24: null, marketCap: null }; 
+}
+export async function fetchCmcPriceById(_cmcId?: number | null): Promise<CmcPriceData> { 
+  return { priceUsd: null, priceChangeH24: null, marketCap: null }; 
+}

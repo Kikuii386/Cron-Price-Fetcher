@@ -1,6 +1,5 @@
 // src/storage.ts — Supabase-backed storage (replacing Upstash/Redis)
-import pkg from "@supabase/supabase-js";
-const { createClient } = pkg;
+import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PriceResult } from "./types.js";
 import pRetry from "p-retry";
@@ -51,22 +50,24 @@ let sb: SupabaseClient | null = null;
 
 function mask(key?: string) {
   if (!key) return "";
-  return key.length > 8 ? `${key.slice(0,4)}…${key.slice(-4)}` : "****";
+  return key.length > 8 ? `${key.slice(0, 4)}…${key.slice(-4)}` : "****";
 }
 
 function init() {
   if (sb) return sb;
 
-  const url  = process.env.SUPABASE_URL;
-  const sr   = process.env.SUPABASE_SERVICE_ROLE;   // prefer service role on server
-  const anon = process.env.SUPABASE_ANON_KEY;       // fallback for public environments
+  const url = process.env.SUPABASE_URL;
+  const sr = process.env.SUPABASE_SERVICE_ROLE; // prefer service role on server
+  const anon = process.env.SUPABASE_ANON_KEY; // fallback for public environments
 
   if (!url) {
     console.error("[supabase] missing SUPABASE_URL");
     return null;
   }
   if (!sr && !anon) {
-    console.error("[supabase] missing both SUPABASE_SERVICE_ROLE and SUPABASE_ANON_KEY");
+    console.error(
+      "[supabase] missing both SUPABASE_SERVICE_ROLE and SUPABASE_ANON_KEY"
+    );
     return null;
   }
 
@@ -87,7 +88,9 @@ function enabled() {
 
 // Keep the same cache key format so the rest of the app doesn't change
 export function cacheKey(chain: string, address: string) {
-  return `price:${String(chain).toLowerCase()}:${String(address).toLowerCase()}`;
+  return `price:${String(chain).toLowerCase()}:${String(
+    address
+  ).toLowerCase()}`;
 }
 
 function parseKey(key: string): { chain: string; address: string } | null {
@@ -118,23 +121,31 @@ export async function cacheSet(key: string, value: any, _ttlSeconds?: number) {
     chain: parsed.chain,
     address: parsed.address,
     symbol: value?.symbol ?? null,
-    // keep as string for exactness; Postgres numeric will parse this precisely
     price_usd: s,
+    price_change_h24: value?.priceChangeH24 ?? null,
+    market_cap: value?.marketCap ?? null,
     source: value?.source ?? null,
     at: value?.at ? new Date(value.at).toISOString() : new Date().toISOString(),
   };
 
   const t0 = Date.now();
   try {
-    await pRetry(async () => {
-      const { error } = await (client
-        .from('prices') as any)
-        .upsert([row], { onConflict: 'chain,address', returning: 'minimal' });
-      if (error) throw new Error(error.message);
-    }, { retries: 2, minTimeout: 400, maxTimeout: 1200 });
+    await pRetry(
+      async () => {
+        const { error } = await (client.from("prices") as any).upsert([row], {
+          onConflict: "chain,address",
+          returning: "minimal",
+        });
+        if (error) throw new Error(error.message);
+      },
+      { retries: 2, minTimeout: 400, maxTimeout: 1200 }
+    );
     console.log(`[supabase] upsert prices ok: 1 row in ${Date.now() - t0}ms`);
   } catch (e: any) {
-    console.error(`[supabase] upsert prices error after ${Date.now() - t0}ms:`, e?.message || e);
+    console.error(
+      `[supabase] upsert prices error after ${Date.now() - t0}ms:`,
+      e?.message || e
+    );
   }
 }
 
@@ -146,35 +157,47 @@ export async function cacheGet<T = any>(key: string): Promise<T | null> {
   if (!parsed) return null;
 
   try {
-    const data = await pRetry(async () => {
-      const { data, error } = await client
-        .from("prices")
-        .select("chain,address,symbol,price_usd,source,at")
-        .eq("chain", parsed.chain)
-        .eq("address", parsed.address)
-        .maybeSingle();
-      if (error) throw new Error(error.message);
-      return data as any;
-    }, { retries: 2, minTimeout: 400, maxTimeout: 1200 });
+    const data = await pRetry(
+      async () => {
+        const { data, error } = await client
+          .from("prices")
+          .select(
+            "chain,address,symbol,price_usd,price_change_h24,market_cap,source,at"
+          )
+          .eq("chain", parsed.chain)
+          .eq("address", parsed.address)
+          .maybeSingle();
+        if (error) throw new Error(error.message);
+        return data as any;
+      },
+      { retries: 2, minTimeout: 400, maxTimeout: 1200 }
+    );
 
     if (!data) return null;
     const mapped: any = {
       chain: data.chain,
       address: data.address,
       symbol: data.symbol ?? undefined,
-      priceUsd: data.price_usd === null ? null : parseNumericLoose(data.price_usd),
+      priceUsd:
+        data.price_usd === null ? null : parseNumericLoose(data.price_usd),
+      // แมปค่าใหม่กลับเป็นตัวเลข
+      priceChangeH24:
+        data.price_change_h24 === null ? null : Number(data.price_change_h24),
+      marketCap: data.market_cap === null ? null : Number(data.market_cap),
       source: data.source ?? null,
       at: data.at ?? new Date().toISOString(),
     };
     return mapped as T;
   } catch (e: any) {
-    // reduce noise; treat as cache miss when transient network errors happen
     console.warn("[supabase/read retry exhausted]", e?.message || e);
     return null;
   }
 }
 
-async function readExisting(client: SupabaseClient, rows: Array<{chain: string; address: string}>) {
+async function readExisting(
+  client: SupabaseClient,
+  rows: Array<{ chain: string; address: string }>
+) {
   // Group addresses by chain, then query in small chunks to avoid very long URLs/body
   const CHUNK = 200;
   const byChain = new Map<string, string[]>();
@@ -186,27 +209,44 @@ async function readExisting(client: SupabaseClient, rows: Array<{chain: string; 
     byChain.set(c, list);
   }
 
-  const map = new Map<string, { price_usd: number | null; at: string | null; source: string | null }>();
+  const map = new Map<
+    string,
+    {
+      price_usd: number | null;
+      price_change_h24: number | null; // เพิ่มตรงนี้เพื่อให้หายแดงใน Map
+      market_cap: number | null; // เพิ่มตรงนี้เพื่อให้หายแดงใน Map
+      at: string | null;
+      source: string | null;
+    }
+  >();
 
   for (const [chain, allAddrs] of byChain) {
     for (let i = 0; i < allAddrs.length; i += CHUNK) {
       const batch = allAddrs.slice(i, i + CHUNK);
       const { data, error } = await client
         .from("prices")
-        .select("chain,address,price_usd,at,source")
+        .select("chain,address,price_usd,price_change_h24,market_cap,at,source")
         .eq("chain", chain)
         .in("address", batch);
 
       if (error) {
-        console.warn("[supabase] readExisting chunk error:", error.message, `(chain=${chain}, size=${batch.length})`);
+        console.warn(
+          "[supabase] readExisting chunk error:",
+          error.message,
+          `(chain=${chain}, size=${batch.length})`
+        );
         continue; // proceed with remaining chunks
       }
 
-      for (const r of (data || [])) {
-        const k = `${String(r.chain).toLowerCase()}|${String(r.address).toLowerCase()}`;
+      for (const r of data || []) {
+        const k = `${String(r.chain).toLowerCase()}|${String(
+          r.address
+        ).toLowerCase()}`;
         const num = parseNumericLoose(r.price_usd);
         map.set(k, {
           price_usd: num,
+          price_change_h24: parseNumericLoose(r.price_change_h24), // เพิ่ม
+          market_cap: parseNumericLoose(r.market_cap), // เพิ่ม
           at: r.at ?? null,
           source: r.source ?? null,
         });
@@ -218,7 +258,10 @@ async function readExisting(client: SupabaseClient, rows: Array<{chain: string; 
 }
 
 // Bulk store — used by the fetch cycle to write many results efficiently
-export async function storeResults(results: PriceResult[], opts: { force?: boolean } = {}) {
+export async function storeResults(
+  results: PriceResult[],
+  opts: { force?: boolean } = {}
+) {
   if (!enabled() || !results?.length) return;
   const client = init()!;
   const force = !!opts.force;
@@ -226,59 +269,83 @@ export async function storeResults(results: PriceResult[], opts: { force?: boole
   // Build upserts as numbers; keep UTC now for 'at'
   const nowIso = new Date().toISOString();
   const upserts = results
-    .map(r => {
-      const s = (r as any).priceUsd == null ? null : String((r as any).priceUsd).trim();
-      if (s == null || s === '') return null;
+    .map((r) => {
+      // ตรวจสอบราคาหลัก (PriceUsd)
+      const s = r.priceUsd == null ? null : String(r.priceUsd).trim();
+      if (s == null || s === "") return null;
+
       const n = parseNumericLoose(s);
       if (n == null) return null;
+
       return {
-        chain: String(r.chain).toLowerCase(),
-        address: String(r.address).toLowerCase(),
+        chain: r.chain.toLowerCase(),
+        address: r.address.toLowerCase(),
         symbol: r.symbol ?? null,
-        // keep the original string for exact decimal precision (Postgres numeric will parse it)
         price_usd: s,
-        source: r.source ?? null,
+        price_change_h24: r.priceChangeH24,
+        market_cap: r.marketCap,
+        source: r.source,
         at: nowIso,
       };
     })
-    .filter(Boolean) as Array<{ chain: string; address: string; symbol: string | null; price_usd: string | null; source: string | null; at: string }>;
+    .filter(Boolean) as any[];
 
-  if (upserts.length === 0) {
+  if (!upserts.length) {
     console.log("[supabase] nothing to upsert (no valid numeric prices)");
     return;
   }
 
   // Read existing for diff (and for force logic if needed)
-  const beforeMap = await readExisting(client, upserts.map(u => ({ chain: u.chain, address: u.address })));
+  const beforeMap = await readExisting(
+    client,
+    upserts.map((u) => ({ chain: u.chain, address: u.address }))
+  );
 
   // Optional "force": we don't delete; we rely on upsert, but we will log everything as changed
   if (force) {
-    console.log("[supabase] force mode: will upsert all rows regardless of equality");
+    console.log(
+      "[supabase] force mode: will upsert all rows regardless of equality"
+    );
   }
 
   const t0 = Date.now();
-  console.log('[supabase] preparing batch upsert, rows:', upserts.length, 'sample:', upserts.slice(0, 2));
+  console.log(
+    "[supabase] preparing batch upsert, rows:",
+    upserts.length,
+    "sample:",
+    upserts.slice(0, 2)
+  );
   try {
-    await pRetry(async () => {
-      const { error } = await (client
-        .from("prices") as any)
-        .upsert( upserts, { onConflict: "chain,address", returning: "minimal" });
-      if (error) throw new Error(error.message);
-    }, { retries: 1, minTimeout: 500, maxTimeout: 1200 });
+    await pRetry(
+      async () => {
+        const { error } = await (client.from("prices") as any).upsert(upserts, {
+          onConflict: "chain,address",
+          returning: "minimal",
+        });
+        if (error) throw new Error(error.message);
+      },
+      { retries: 1, minTimeout: 500, maxTimeout: 1200 }
+    );
   } catch (e: any) {
-    console.error(`[supabase] batch upsert prices error after ${Date.now() - t0}ms:`, e?.message || e);
+    console.error(
+      `[supabase] batch upsert prices error after ${Date.now() - t0}ms:`,
+      e?.message || e
+    );
     return;
   }
 
   // Read after and compute diffs
-  const afterMap = await readExisting(client, upserts.map(u => ({ chain: u.chain, address: u.address })));
+  const afterMap = await readExisting(
+    client,
+    upserts.map((u) => ({ chain: u.chain, address: u.address }))
+  );
   const changed: any[] = [];
   for (const u of upserts) {
     const k = `${u.chain}|${u.address}`;
     const b = beforeMap.get(k) || { price_usd: null, at: null, source: null };
     const a = afterMap.get(k) || { price_usd: null, at: null, source: null };
     const diffPrice = !eqApprox(b.price_usd, a.price_usd);
-    const diff = force || diffPrice || (b.at !== a.at) || (b.source !== a.source);
+    const diff = force || diffPrice || b.at !== a.at || b.source !== a.source;
     if (diff) {
       changed.push({
         chain: u.chain,
@@ -292,7 +359,12 @@ export async function storeResults(results: PriceResult[], opts: { force?: boole
       });
     }
   }
-  console.log(`[supabase] batch upsert prices ok: ${upserts.length} rows in ${Date.now() - t0}ms; changed=${changed.length}`, changed.slice(0, 5));
+  console.log(
+    `[supabase] batch upsert prices ok: ${upserts.length} rows in ${
+      Date.now() - t0
+    }ms; changed=${changed.length}`,
+    changed.slice(0, 5)
+  );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -301,7 +373,10 @@ export async function storeResults(results: PriceResult[], opts: { force?: boole
 export type CacheRow = {
   chain: string;
   address: string;
+  symbol?: string | null; // เพิ่ม
   price_usd: string | number | null;
+  price_change_h24: number | null; // เพิ่มใหม่
+  market_cap: number | null; // เพิ่มใหม่
   source: string | null;
   at: string | null;
 };
@@ -310,7 +385,9 @@ export type CacheRow = {
  * Read many cache rows at once, grouped by chain and chunked to avoid very long requests.
  * This does not alter existing cacheGet/storeResults behavior; callers can opt-in for speed.
  */
-export async function readCacheBatch(tokens: { chain: string; contract_address: string }[]) {
+export async function readCacheBatch(
+  tokens: { chain: string; contract_address: string }[]
+) {
   const client = init();
   const out = new Map<string, CacheRow>();
   if (!client || !tokens?.length) return out;
@@ -332,16 +409,34 @@ export async function readCacheBatch(tokens: { chain: string; contract_address: 
       const part = addrs.slice(i, i + CHUNK);
       const { data, error } = await client
         .from("prices")
-        .select("chain,address,price_usd,source,at")
+        .select("chain,address,price_usd,price_change_h24,market_cap,source,at")
         .eq("chain", chain)
         .in("address", part);
       if (error) {
-        console.warn("[supabase] readCacheBatch chunk error:", error.message, `(chain=${chain}, size=${part.length})`);
+        console.warn(
+          "[supabase] readCacheBatch chunk error:",
+          error.message,
+          `(chain=${chain}, size=${part.length})`
+        );
         continue;
       }
-      for (const r of (data ?? []) as any[]) {
-        const k = `${String(r.chain).toLowerCase()}|${String(r.address).toLowerCase()}`;
-        out.set(k, r as CacheRow);
+      for (const r of (data || []) as any[]) {
+        const k = `${String(r.chain).toLowerCase()}|${String(
+          r.address
+        ).toLowerCase()}`;
+
+        // แปลงข้อมูลให้ตรงตามโครงสร้าง CacheRow
+        out.set(k, {
+          chain: r.chain,
+          address: r.address,
+          symbol: r.symbol,
+          price_usd: r.price_usd,
+          // ข้อมูลใหม่ที่จะไม่เป็น undefined อีกต่อไป
+          price_change_h24: r.price_change_h24,
+          market_cap: r.market_cap,
+          source: r.source,
+          at: r.at,
+        } as CacheRow);
       }
     }
   }
@@ -351,14 +446,16 @@ export async function readCacheBatch(tokens: { chain: string; contract_address: 
 // ────────────────────────────────────────────────────────────────
 // Diagnostics: quick ping to detect Supabase connectivity/timeout
 // ────────────────────────────────────────────────────────────────
-export async function pingSupabase(timeoutMs = 5000): Promise<{ ok: boolean; ms: number; error?: string }> {
+export async function pingSupabase(
+  timeoutMs = 5000
+): Promise<{ ok: boolean; ms: number; error?: string }> {
   const client = init();
   const t0 = Date.now();
-  if (!client) return { ok: false, ms: 0, error: 'supabase not initialized' };
+  if (!client) return { ok: false, ms: 0, error: "supabase not initialized" };
   try {
     const { error } = await client
-      .from('prices')
-      .select('address', { head: true, count: 'exact' })
+      .from("prices")
+      .select("address", { head: true, count: "exact" })
       .limit(1);
     if (error) return { ok: false, ms: Date.now() - t0, error: error.message };
     return { ok: true, ms: Date.now() - t0 };

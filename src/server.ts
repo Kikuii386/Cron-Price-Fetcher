@@ -3,7 +3,7 @@ import axios from "axios";
 import { CFG } from "./config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
 import { storeResults, cacheGet, cacheKey, readCacheBatch } from "./storage.js";
-import { pingSupabase } from './storage.js';
+import { pingSupabase } from "./storage.js";
 import type { SheetTokenRow, PriceResult } from "./types.js";
 
 // Lightweight shape for Dexscreener normalized rows used in debug endpoints
@@ -16,7 +16,7 @@ export type DsRow = {
   vol24h: number;
   priceUsd: number | null;
 };
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from "@supabase/supabase-js";
 
 // --- Helpers ---
 
@@ -58,14 +58,26 @@ function summarize(prices: PriceResult[]) {
       else if (p.source === "cmc") bySource.cmc++;
     }
   }
-  return { totals: { total: prices.length, withPrice, nulls: prices.length - withPrice }, bySource };
+  return {
+    totals: {
+      total: prices.length,
+      withPrice,
+      nulls: prices.length - withPrice,
+    },
+    bySource,
+  };
 }
 
 function normalizeToken(x: any): SheetTokenRow | null {
-  const chain = String(x.chain || x.cmcChain || "").trim().toLowerCase();
-  const address = String(x.contract || x.address || "").trim().toLowerCase();
+  const chain = String(x.chain || x.cmcChain || "")
+    .trim()
+    .toLowerCase();
+  const address = String(x.contract || x.address || "")
+    .trim()
+    .toLowerCase();
   if (!chain || !address) return null;
-  const symbol = (x.name || x.symbol || "").toString().replace(/^\$/, "") || undefined;
+  const symbol =
+    (x.name || x.symbol || "").toString().replace(/^\$/, "") || undefined;
   const cmc_id =
     x.cmcId === "" || x.cmcId == null || Number.isNaN(Number(x.cmcId))
       ? null
@@ -108,7 +120,6 @@ async function runOnce(): Promise<PriceResult[]> {
   return prices;
 }
 
-
 function supaFetchWithTimeout(input: any, init: any = {}) {
   const ms = Number(process.env.SB_FETCH_TIMEOUT_MS || 15000);
   const controller = new AbortController();
@@ -134,20 +145,22 @@ async function runOnceInstrumented(): Promise<void> {
     // Always fetch fresh prices (bypass cache)
     const prices = await fetchAllPrices(tokens, { bypassCache: true });
     const sampleRows = prices
-      .filter(p => p && p.priceUsd != null)
+      .filter((p) => p && p.priceUsd != null)
       .slice(0, 5)
-      .map(p => ({
+      .map((p) => ({
         chain: p.chain,
         address: p.address,
-        price_usd: typeof p.priceUsd === 'number' ? p.priceUsd : Number(p.priceUsd),
+        price_usd:
+          typeof p.priceUsd === "number" ? p.priceUsd : Number(p.priceUsd),
         source: p.source,
       }));
     summary.fetch = {
       count: prices.length,
       ms: Date.now() - t2,
       bySource: prices.reduce((acc: any, p: any) => {
-        const k = p.source || 'unknown';
-        if (p.priceUsd != null && Number(p.priceUsd) > 0) acc[k] = (acc[k] || 0) + 1;
+        const k = p.source || "unknown";
+        if (p.priceUsd != null && Number(p.priceUsd) > 0)
+          acc[k] = (acc[k] || 0) + 1;
         return acc;
       }, {}),
       sample: sampleRows,
@@ -276,6 +289,9 @@ const server = http.createServer(async (req, res) => {
             address: t.contract_address,
             symbol: t.symbol ?? undefined,
             priceUsd: r?.price_usd != null ? Number(String(r.price_usd)) : null,
+            priceChangeH24:
+              r?.price_change_h24 != null ? Number(r.price_change_h24) : null,
+            marketCap: r?.market_cap != null ? Number(r.market_cap) : null,
             source: r?.source ?? null,
             at: r?.at ?? null,
           };
@@ -304,7 +320,9 @@ const server = http.createServer(async (req, res) => {
 
       const tokens = await readTokensFromAppsScript();
       const keys = tokens.map((t) => cacheKey(t.chain, t.contract_address));
-      const cached = await Promise.all(keys.map((k) => cacheGet<PriceResult>(k)));
+      const cached = await Promise.all(
+        keys.map((k) => cacheGet<PriceResult>(k))
+      );
       let prices = cached.filter((v): v is PriceResult => !!v);
 
       if (refresh) {
@@ -315,7 +333,9 @@ const server = http.createServer(async (req, res) => {
               await storeResults(fresh);
               const s = summarize(fresh);
               console.log(
-                `[stats refresh async] total=${s.totals.total} ok=${s.totals.withPrice} nulls=${s.totals.nulls} src=${JSON.stringify(s.bySource)}`
+                `[stats refresh async] total=${s.totals.total} ok=${
+                  s.totals.withPrice
+                } nulls=${s.totals.nulls} src=${JSON.stringify(s.bySource)}`
               );
             } catch (e: any) {
               console.error("[stats refresh async] error:", e?.message || e);
@@ -351,7 +371,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/debug/gecko") {
       try {
         // If user supplies an explicit id or comma-separated ids, prefer those.
-        const idParam = url.searchParams.get("id") || url.searchParams.get("ids");
+        const idParam =
+          url.searchParams.get("id") || url.searchParams.get("ids");
         let ids: string[] = [];
 
         if (idParam && idParam.trim().length > 0) {
@@ -364,9 +385,7 @@ const server = http.createServer(async (req, res) => {
           const tokens = await readTokensFromAppsScript();
           ids = Array.from(
             new Set(
-              tokens
-                .map((t) => t.coingecko_id)
-                .filter((x): x is string => !!x)
+              tokens.map((t) => t.coingecko_id).filter((x): x is string => !!x)
             )
           ).slice(0, 25); // probe first 25 ids
         }
@@ -383,11 +402,11 @@ const server = http.createServer(async (req, res) => {
         const cg = await axios.get(urlCg, {
           timeout: 15000,
           headers: {
-          Accept: "application/json",
+            Accept: "application/json",
             "User-Agent": "cron-price-fetcher/1.0",
-        },
+          },
           validateStatus: (s) => s >= 200 && s < 500,
-});
+        });
 
         const body = cg.data || {};
         const have = Object.keys(body);
@@ -411,64 +430,71 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Debug: show source URL and how many tokens returned
-if (req.method === "GET" && url.pathname === "/debug/source") {
-  try {
-    const src = CFG.source.appsScriptUrl || "(missing)";
-    const tokens = await readTokensFromAppsScript();
-    ok(res, {
-      ok: true,
-      appsScriptUrl: src,
-      count: tokens.length,
-      sample: tokens.slice(0, 3).map(t => ({ chain: t.chain, address: t.contract_address, geckoId: t.coingecko_id })),
-    });
-  } catch (e: any) {
-    bad(res, 502, e?.message || String(e));
-  }
-  return;
-}
-
-// Debug: Supabase connection check
-if (req.method === "GET" && url.pathname === "/debug/sb") {
-  try {
-    const urlEnv = process.env.SUPABASE_URL;
-    const keyEnv = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY;
-    if (!urlEnv || !keyEnv) {
-      ok(res, { ok: false, error: "missing SUPABASE_URL or key" });
+    if (req.method === "GET" && url.pathname === "/debug/source") {
+      try {
+        const src = CFG.source.appsScriptUrl || "(missing)";
+        const tokens = await readTokensFromAppsScript();
+        ok(res, {
+          ok: true,
+          appsScriptUrl: src,
+          count: tokens.length,
+          sample: tokens.slice(0, 3).map((t) => ({
+            chain: t.chain,
+            address: t.contract_address,
+            geckoId: t.coingecko_id,
+          })),
+        });
+      } catch (e: any) {
+        bad(res, 502, e?.message || String(e));
+      }
       return;
     }
 
-    // Create client with a fetch that has a timeout
-    const sb = createClient(urlEnv, keyEnv, {
-      auth: { persistSession: false },
-      global: { fetch: supaFetchWithTimeout as any },
-    });
+    // Debug: Supabase connection check
+    if (req.method === "GET" && url.pathname === "/debug/sb") {
+      try {
+        const urlEnv = process.env.SUPABASE_URL;
+        const keyEnv =
+          process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY;
+        if (!urlEnv || !keyEnv) {
+          ok(res, { ok: false, error: "missing SUPABASE_URL or key" });
+          return;
+        }
 
-    // Lightweight probe: head + count only
-    const { count, error } = await sb
-      .from("prices")
-      .select("*", { head: true, count: "estimated" });
+        // Create client with a fetch that has a timeout
+        const sb = createClient(urlEnv, keyEnv, {
+          auth: { persistSession: false },
+          global: { fetch: supaFetchWithTimeout as any },
+        });
 
-    if (error) {
-      ok(res, { ok: false, error: error.message });
+        // Lightweight probe: head + count only
+        const { count, error } = await sb
+          .from("prices")
+          .select("*", { head: true, count: "estimated" });
+
+        if (error) {
+          ok(res, { ok: false, error: error.message });
+          return;
+        }
+
+        ok(res, { ok: true, count: count ?? 0 });
+      } catch (e: any) {
+        ok(res, { ok: false, error: e?.message || String(e) });
+      }
       return;
     }
-
-    ok(res, { ok: true, count: count ?? 0 });
-  } catch (e: any) {
-    ok(res, { ok: false, error: e?.message || String(e) });
-  }
-  return;
-}
 
     // Debug: latency and connectivity checks
-    if (req.method === 'GET' && url.pathname === '/debug/pings') {
+    if (req.method === "GET" && url.pathname === "/debug/pings") {
       try {
         const dsT0 = Date.now();
-        let dsOk = false, dsMs = 0, dsErr: string | undefined;
+        let dsOk = false,
+          dsMs = 0,
+          dsErr: string | undefined;
         try {
           const ds = await axios.get(
-            'https://api.dexscreener.com/latest/dex/tokens/0x88faea256f789f8dd50de54f9c807eef24f71b16',
-            { timeout: 8000, validateStatus: s => s >= 200 && s < 500 }
+            "https://api.dexscreener.com/latest/dex/tokens/0x88faea256f789f8dd50de54f9c807eef24f71b16",
+            { timeout: 8000, validateStatus: (s) => s >= 200 && s < 500 }
           );
           dsOk = ds.status === 200;
           dsMs = Date.now() - dsT0;
@@ -480,11 +506,15 @@ if (req.method === "GET" && url.pathname === "/debug/sb") {
 
         const sb = await pingSupabase(8000);
 
-        ok(res, {
-          asOf: new Date().toISOString(),
-          dexscreener: { ok: dsOk, ms: dsMs, error: dsErr },
-          supabase: sb,
-        }, 5);
+        ok(
+          res,
+          {
+            asOf: new Date().toISOString(),
+            dexscreener: { ok: dsOk, ms: dsMs, error: dsErr },
+            supabase: sb,
+          },
+          5
+        );
         return;
       } catch (e: any) {
         bad(res, 500, e?.message || String(e));
@@ -492,222 +522,272 @@ if (req.method === "GET" && url.pathname === "/debug/sb") {
       }
     }
 
-// Debug: show last run summary if available, always include asOf timestamp
-if (req.method === 'GET' && url.pathname === '/debug/last-run') {
-  const body = LAST_RUN_SUMMARY ?? { ok: false, error: 'no run yet' };
-  ok(res, { asOf: new Date().toISOString(), ...body }, 0);
-  return;
-}
-
-// Debug: ตรวจว่าทำไมราคา Dexscreener ไม่ตรง (ดูคู่/พูลทั้งหมดและตัวที่เลือก)
-if (req.method === "GET" && url.pathname === "/debug/ds-why") {
-  try {
-    const chainParam = (url.searchParams.get("chain") ?? url.searchParams.get("b") ?? "").toLowerCase();
-    const addressParam = (url.searchParams.get("address") ?? url.searchParams.get("a") ?? "").toLowerCase();
-    const chain = chainParam;
-    const address = addressParam;
-    if (!address) {
-      bad(res, 400, "missing address");
+    // Debug: show last run summary if available, always include asOf timestamp
+    if (req.method === "GET" && url.pathname === "/debug/last-run") {
+      const body = LAST_RUN_SUMMARY ?? { ok: false, error: "no run yet" };
+      ok(res, { asOf: new Date().toISOString(), ...body }, 0);
       return;
     }
 
-    // ดึงทุกคู่ของ token นี้ (ปิด cache)
-    const apiUrl = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}?_t=${Date.now()}`;
-    const r = await axios.get(apiUrl, {
-      timeout: 15000,
-      headers: { "Cache-Control": "no-cache", "User-Agent": "cron-price-fetcher/1.0" },
-      validateStatus: s => s >= 200 && s < 500,
-    });
+    // Debug: ตรวจว่าทำไมราคา Dexscreener ไม่ตรง (ดูคู่/พูลทั้งหมดและตัวที่เลือก)
+    if (req.method === "GET" && url.pathname === "/debug/ds-why") {
+      try {
+        const chainParam = (
+          url.searchParams.get("chain") ??
+          url.searchParams.get("b") ??
+          ""
+        ).toLowerCase();
+        const addressParam = (
+          url.searchParams.get("address") ??
+          url.searchParams.get("a") ??
+          ""
+        ).toLowerCase();
+        const chain = chainParam;
+        const address = addressParam;
+        if (!address) {
+          bad(res, 400, "missing address");
+          return;
+        }
 
-    if (r.status !== 200 || !r.data?.pairs) {
-      bad(res, 502, `dexscreener http ${r.status}`);
-      return;
+        // ดึงทุกคู่ของ token นี้ (ปิด cache)
+        const apiUrl = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(
+          address
+        )}?_t=${Date.now()}`;
+        const r = await axios.get(apiUrl, {
+          timeout: 15000,
+          headers: {
+            "Cache-Control": "no-cache",
+            "User-Agent": "cron-price-fetcher/1.0",
+          },
+          validateStatus: (s) => s >= 200 && s < 500,
+        });
+
+        if (r.status !== 200 || !r.data?.pairs) {
+          bad(res, 502, `dexscreener http ${r.status}`);
+          return;
+        }
+
+        const pairs = r.data.pairs as any[];
+
+        // คำนวณตัวช่วย
+        const norm = (p: any) => ({
+          chainId: p.chainId,
+          dexId: p.dexId,
+          pairAddress: p.pairAddress,
+          quote: p.quoteToken?.symbol,
+          liq: Number(p.liquidity?.usd ?? p.liquidityUsd ?? 0),
+          vol24h: Number(p.volume?.h24 ?? p.volume24h ?? 0),
+          priceUsd: p.priceUsd != null ? Number(p.priceUsd) : null,
+        });
+
+        const rows: DsRow[] = pairs.map(norm);
+
+        // เลือก best โดย 2 เกณฑ์ให้เห็นความต่าง
+        const byLiq =
+          [...rows].sort((a: DsRow, b: DsRow) => b.liq - a.liq)[0] || null;
+
+        const QUOTES = ["USDC", "USDT", "WETH", "SOL", "WBTC", "ETH", "BUSD"];
+        const rowsPreferred = rows.filter((r: DsRow) =>
+          QUOTES.includes(String(r.quote || "").toUpperCase())
+        );
+        const byPreferredThenLiq =
+          (rowsPreferred.length ? rowsPreferred : rows).sort(
+            (a: DsRow, b: DsRow) => b.liq - a.liq
+          )[0] || null;
+
+        ok(
+          res,
+          {
+            ok: true,
+            queried: { chain, address },
+            count: rows.length,
+            top5: rows.sort((a: DsRow, b: DsRow) => b.liq - a.liq).slice(0, 5),
+            pickByLiq: byLiq,
+            pickPreferredThenLiq: byPreferredThenLiq,
+          },
+          5
+        );
+        return;
+      } catch (e: any) {
+        bad(res, 500, e?.message || String(e));
+        return;
+      }
     }
 
-    const pairs = r.data.pairs as any[];
+    // --- เพิ่มด้านบนของไฟล์ร่วมกับ imports เดิม ---
+    // ไม่มี import เพิ่ม เพราะเราใช้ axios และ helpers ในไฟล์นี้อยู่แล้ว
 
-    // คำนวณตัวช่วย
-    const norm = (p: any) => ({
-      chainId: p.chainId,
-      dexId: p.dexId,
-      pairAddress: p.pairAddress,
-      quote: p.quoteToken?.symbol,
-      liq: Number(p.liquidity?.usd ?? p.liquidityUsd ?? 0),
-      vol24h: Number(p.volume?.h24 ?? p.volume24h ?? 0),
-      priceUsd: p.priceUsd != null ? Number(p.priceUsd) : null,
-    });
+    // ... (โค้ดเดิมด้านบนคงเดิม)
 
-    const rows: DsRow[] = pairs.map(norm);
+    // ==== แทนที่ handler /debug/pipeline เดิมทั้งบล็อค ====
+    if (req.method === "GET" && url.pathname === "/debug/pipeline") {
+      try {
+        const chainParam = (
+          url.searchParams.get("chain") ??
+          url.searchParams.get("b") ??
+          ""
+        ).toLowerCase();
+        const addressParam = (
+          url.searchParams.get("address") ??
+          url.searchParams.get("a") ??
+          ""
+        ).toLowerCase();
 
-    // เลือก best โดย 2 เกณฑ์ให้เห็นความต่าง
-    const byLiq = [...rows].sort((a: DsRow, b: DsRow) => (b.liq - a.liq))[0] || null;
+        const truthy = (v: string | null) => {
+          if (!v) return false;
+          const s = v.toLowerCase();
+          return s === "1" || s === "true" || s === "yes";
+        };
 
-    const QUOTES = ["USDC","USDT","WETH","SOL","WBTC","ETH","BUSD"];
-    const rowsPreferred = rows.filter((r: DsRow) =>
-      QUOTES.includes(String(r.quote || "").toUpperCase())
-    );
-    const byPreferredThenLiq = (rowsPreferred.length ? rowsPreferred : rows)
-      .sort((a: DsRow, b: DsRow) => (b.liq - a.liq))[0] || null;
+        const upsert =
+          truthy(url.searchParams.get("upsert")) ||
+          truthy(url.searchParams.get("r"));
+        const useDs =
+          truthy(url.searchParams.get("useDs")) ||
+          truthy(url.searchParams.get("use"));
+        const auto = truthy(url.searchParams.get("auto"));
 
-    ok(res, {
-      ok: true,
-      queried: { chain, address },
-      count: rows.length,
-      top5: rows.sort((a: DsRow, b: DsRow) => b.liq - a.liq).slice(0, 5),
-      pickByLiq: byLiq,
-      pickPreferredThenLiq: byPreferredThenLiq,
-    }, 5);
-    return;
-  } catch (e: any) {
-    bad(res, 500, e?.message || String(e));
-    return;
-  }
-}
+        const chain = chainParam;
+        const address = addressParam;
 
-// --- เพิ่มด้านบนของไฟล์ร่วมกับ imports เดิม ---
-// ไม่มี import เพิ่ม เพราะเราใช้ axios และ helpers ในไฟล์นี้อยู่แล้ว
+        if (!address) {
+          bad(res, 400, "missing address");
+          return;
+        }
 
-// ... (โค้ดเดิมด้านบนคงเดิม)
+        const t0 = Date.now();
 
-// ==== แทนที่ handler /debug/pipeline เดิมทั้งบล็อค ====
-if (req.method === "GET" && url.pathname === "/debug/pipeline") {
-  try {
-    const chainParam = (url.searchParams.get("chain") ?? url.searchParams.get("b") ?? "").toLowerCase();
-    const addressParam = (url.searchParams.get("address") ?? url.searchParams.get("a") ?? "").toLowerCase();
+        // 1) สร้าง token หนึ่งตัวจากพารามิเตอร์ (ถ้า Apps Script ไม่มีตัวนี้)
+        const maybeTokens = await readTokensFromAppsScript().catch(() => []);
+        const fromSheet = (maybeTokens || []).find(
+          (t) => t.contract_address === address && (!chain || t.chain === chain)
+        );
+        const token = fromSheet ?? {
+          chain: chain || "sol",
+          contract_address: address,
+          symbol: undefined,
+          decimals: null,
+          coingecko_id: null,
+          cmc_id: null,
+          cmc_slug: null,
+          logo: null,
+          allocationPct: null,
+        };
 
-    const truthy = (v: string | null) => {
-      if (!v) return false;
-      const s = v.toLowerCase();
-      return s === "1" || s === "true" || s === "yes";
-    };
+        // 2) ดึง "ค่าจริงตามโปรดักชัน" ผ่าน fetchAllPrices
+        const prodArr = await fetchAllPrices([token]);
+        const prod = prodArr[0] || null;
 
-    const upsert = truthy(url.searchParams.get("upsert")) || truthy(url.searchParams.get("r"));
-    const useDs  = truthy(url.searchParams.get("useDs")) || truthy(url.searchParams.get("use"));
-    const auto   = truthy(url.searchParams.get("auto"));
+        // 3) ดึง Dexscreener ตรงแบบ no-cache (ตรรกะเดียวกับ /debug/ds-why)
+        const apiUrl = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(
+          address
+        )}?_t=${Date.now()}`;
+        const r = await axios.get(apiUrl, {
+          timeout: 15000,
+          headers: {
+            "Cache-Control": "no-cache",
+            "User-Agent": "cron-price-fetcher/1.0",
+          },
+          validateStatus: (s) => s >= 200 && s < 500,
+        });
+        const pairs = Array.isArray(r.data?.pairs) ? r.data.pairs : [];
 
-    const chain = chainParam;
-    const address = addressParam;
+        const norm = (p: any) => ({
+          chainId: p.chainId,
+          dexId: p.dexId,
+          pairAddress: p.pairAddress,
+          quote: p?.quoteToken?.symbol,
+          liq: Number(p?.liquidity?.usd ?? p?.liquidityUsd ?? 0),
+          vol24h: Number(p?.volume?.h24 ?? p?.volume24h ?? 0),
+          priceUsd: p?.priceUsd != null ? Number(p.priceUsd) : null,
+        });
+        const rows: DsRow[] = pairs.map(norm);
 
-    if (!address) {
-      bad(res, 400, "missing address");
-      return;
-    }
+        // เลือก pool ตาม preferred quotes จาก /debug/ds-why
+        const QUOTES = ["USDC", "USDT", "WETH", "SOL", "WBTC", "ETH", "BUSD"];
+        const rowsPreferred = rows.filter((r: DsRow) =>
+          QUOTES.includes(String(r.quote || "").toUpperCase())
+        );
+        const bestDs =
+          (rowsPreferred.length ? rowsPreferred : rows)
+            .filter((r: DsRow) => r.priceUsd != null)
+            .sort((a: DsRow, b: DsRow) => b.liq - a.liq)[0] || null;
 
-    const t0 = Date.now();
+        // 4) เตรียมผลลัพธ์
 
-    // 1) สร้าง token หนึ่งตัวจากพารามิเตอร์ (ถ้า Apps Script ไม่มีตัวนี้)
-    const maybeTokens = await readTokensFromAppsScript().catch(() => []);
-    const fromSheet = (maybeTokens || []).find(t => t.contract_address === address && (!chain || t.chain === chain));
-    const token = fromSheet ?? {
-      chain: chain || "sol",
-      contract_address: address,
-      symbol: undefined,
-      decimals: null,
-      coingecko_id: null,
-      cmc_id: null,
-      cmc_slug: null,
-      logo: null,
-      allocationPct: null,
-    };
+        // คำนวณ diff ระหว่าง prod กับ DS สด
+        const prodPrice = prod?.priceUsd != null ? Number(prod.priceUsd) : null;
+        const dsPrice =
+          bestDs?.priceUsd != null ? Number(bestDs.priceUsd) : null;
+        let diffPct: number | null = null;
+        let alert = false;
+        if (prodPrice != null && dsPrice != null && dsPrice > 0) {
+          diffPct = Math.abs((prodPrice - dsPrice) / dsPrice) * 100;
+          // alert kept for backward compatibility but no longer used to gate upserts
+          alert = false;
+        }
 
-    // 2) ดึง "ค่าจริงตามโปรดักชัน" ผ่าน fetchAllPrices
-    const prodArr = await fetchAllPrices([token]);
-    const prod = prodArr[0] || null;
+        // Decide and perform upsert (supports ?useDs=1 and/or ?auto=1 to write DS when diff exceeds threshold)
+        let upserted = false;
+        let upsertSource: "ds" | "prod" | null = null;
+        if (upsert) {
+          const shouldUseDs = (useDs || auto) && bestDs?.priceUsd != null;
 
-    // 3) ดึง Dexscreener ตรงแบบ no-cache (ตรรกะเดียวกับ /debug/ds-why)
-    const apiUrl = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}?_t=${Date.now()}`;
-    const r = await axios.get(apiUrl, {
-      timeout: 15000,
-      headers: { "Cache-Control": "no-cache", "User-Agent": "cron-price-fetcher/1.0" },
-      validateStatus: s => s >= 200 && s < 500,
-    });
-    const pairs = Array.isArray(r.data?.pairs) ? r.data.pairs : [];
-
-    const norm = (p: any) => ({
-      chainId: p.chainId,
-      dexId: p.dexId,
-      pairAddress: p.pairAddress,
-      quote: p?.quoteToken?.symbol,
-      liq: Number(p?.liquidity?.usd ?? p?.liquidityUsd ?? 0),
-      vol24h: Number(p?.volume?.h24 ?? p?.volume24h ?? 0),
-      priceUsd: p?.priceUsd != null ? Number(p.priceUsd) : null,
-    });
-    const rows: DsRow[] = pairs.map(norm);
-
-    // เลือก pool ตาม preferred quotes จาก /debug/ds-why
-    const QUOTES = ["USDC","USDT","WETH","SOL","WBTC","ETH","BUSD"];
-    const rowsPreferred = rows.filter((r: DsRow) =>
-      QUOTES.includes(String(r.quote || "").toUpperCase())
-    );
-    const bestDs = (rowsPreferred.length ? rowsPreferred : rows)
-      .filter((r: DsRow) => r.priceUsd != null)
-      .sort((a: DsRow, b: DsRow) => (b.liq - a.liq))[0] || null;
-
-    // 4) เตรียมผลลัพธ์
-
-    // คำนวณ diff ระหว่าง prod กับ DS สด
-    const prodPrice = prod?.priceUsd != null ? Number(prod.priceUsd) : null;
-    const dsPrice = bestDs?.priceUsd != null ? Number(bestDs.priceUsd) : null;
-    let diffPct: number | null = null;
-    let alert = false;
-    if (prodPrice != null && dsPrice != null && dsPrice > 0) {
-      diffPct = Math.abs((prodPrice - dsPrice) / dsPrice) * 100;
-      // alert kept for backward compatibility but no longer used to gate upserts
-      alert = false;
-    }
-
-    // Decide and perform upsert (supports ?useDs=1 and/or ?auto=1 to write DS when diff exceeds threshold)
-    let upserted = false;
-    let upsertSource: "ds" | "prod" | null = null;
-    if (upsert) {
-      const shouldUseDs = (useDs || auto) && bestDs?.priceUsd != null;
-
-      const writeRow: PriceResult | null =
-        shouldUseDs && prod
-          ? {
-              chain: (prod.chain ?? token.chain) as string,
-              address: (prod.address ?? token.contract_address) as string,
-              priceUsd: Number(bestDs!.priceUsd),
-              source: "dexscreener",
-              at: new Date().toISOString(),
-            }
-          : (prod
+          const writeRow: PriceResult | null =
+            shouldUseDs && prod
+              ? {
+                  chain: (prod.chain ?? token.chain) as string,
+                  address: (prod.address ?? token.contract_address) as string,
+                  priceChangeH24: (bestDs as any)?.priceChangeH24 ?? null,
+                  marketCap: (bestDs as any)?.marketCap ?? null,
+                  priceUsd: Number(bestDs!.priceUsd),
+                  source: "dexscreener",
+                  at: new Date().toISOString(),
+                }
+              : prod
               ? {
                   chain: prod.chain as string,
                   address: prod.address as string,
                   priceUsd: (prod.priceUsd ?? null) as number | null,
+                  // เพิ่มข้อมูลจากตัวแปร prod (ดึงมาจาก Cache/Database)
+                  priceChangeH24: (prod as any).priceChangeH24 ?? null,
+                  marketCap: (prod as any).marketCap ?? null,
                   source: (prod.source ?? null) as any,
                   at: (prod.at ?? new Date().toISOString()) as string,
                 }
-              : null);
+              : null;
 
-      if (writeRow) {
-        await storeResults([writeRow]);
-        upserted = true;
-        upsertSource = shouldUseDs ? "ds" : "prod";
+          if (writeRow) {
+            await storeResults([writeRow]);
+            upserted = true;
+            upsertSource = shouldUseDs ? "ds" : "prod";
+          }
+        }
+
+        ok(
+          res,
+          {
+            ok: true,
+            chain: token.chain,
+            address: token.contract_address,
+            ms: Date.now() - t0,
+            prod: prod ?? null, // สิ่งที่โปรดักชันเลือกใช้จริง
+            dsBest: bestDs ?? null, // สิ่งที่ DS สด ๆ เลือก (preferred quotes + liq)
+            diffPct,
+            alert, // true ถ้าต่างเกิน DIFF_ALERT %
+            top5: rows.sort((a: DsRow, b: DsRow) => b.liq - a.liq).slice(0, 5),
+            apiUrl, // ให้เห็น URL ที่ยิงจริง
+            upserted,
+            upsertSource,
+          },
+          3
+        );
+        return;
+      } catch (e: any) {
+        bad(res, 500, e?.message || String(e));
+        return;
       }
     }
-
-    ok(res, {
-      ok: true,
-      chain: token.chain,
-      address: token.contract_address,
-      ms: Date.now() - t0,
-      prod: prod ?? null,                    // สิ่งที่โปรดักชันเลือกใช้จริง
-      dsBest: bestDs ?? null,                // สิ่งที่ DS สด ๆ เลือก (preferred quotes + liq)
-      diffPct,
-      alert,                                 // true ถ้าต่างเกิน DIFF_ALERT %
-      top5: rows.sort((a: DsRow, b: DsRow) => b.liq - a.liq).slice(0, 5),
-      apiUrl,                                // ให้เห็น URL ที่ยิงจริง
-      upserted,
-      upsertSource,
-    }, 3);
-    return;
-  } catch (e: any) {
-    bad(res, 500, e?.message || String(e));
-    return;
-  }
-}
 
     bad(res, 404, "not found");
   } catch (e: any) {
