@@ -42,25 +42,26 @@ function toNum(v: any, d: number | null = 0): number | null {
     : d;
 }
 
-function computeMedian(nums: number[]): number | null {
-  if (!nums.length) return null;
-  const a = nums.slice().sort((x, y) => x - y);
-  const mid = Math.floor(a.length / 2);
-  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
-}
-
 const TRUSTED_QUOTES = new Set([
-  "USDC",
-  "USDT",
-  "DAI", // Stablecoins
   "WETH",
   "ETH", // Ethereum
   "SOL",
   "WSOL", // Solana
+  "WBNB",
+  "BNB", // BNB
+  "WMATIC",
+  "MATIC", // Polygon
+  "WAVAX",
+  "AVAX", // Avalanche
+  "SUI",
+  "WSUI", // Sui
   "WBTC",
   "BTC", // Bitcoin
+  "USDT",
+  "USDC",
   "BUSD",
   "USDbC", // Others
+  "DAI",
 ]);
 
 function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
