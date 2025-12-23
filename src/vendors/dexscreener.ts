@@ -35,7 +35,7 @@ export interface DexPriceData {
  * Utilities for robust price selection without hardcoding quote symbols.
  * Strategy: take the median of top-N liquidity pools (defaults: N=3, minLiq=$50).
  */
-function toNum(v: any, d: number | null = 0): number | null {
+function toNum(v: any, d: number | null = null): number | null {
   const n = Number(v);
   return v !== null && v !== undefined && v !== "" && Number.isFinite(n)
     ? n
@@ -110,12 +110,13 @@ function pickBestPriceData(
 
   // 3. 🛡️ SANITY CHECK: กรอง Pair ที่ราคาหรือ MC เวอร์เกินจริง
   rows = rows.filter((p) => {
-    const price = toNum(p.priceUsd, 0);
+    // ✅ แก้ไข 2: ใช้ toNum(..., null) เพื่อเช็คค่าจริง
+    const price = toNum(p.priceUsd, null);
     const mcap = p.marketCap
-      ? toNum(p.marketCap, 0)
+      ? toNum(p.marketCap, null)
       : p.fdv
-      ? toNum(p.fdv, 0)
-      : 0;
+      ? toNum(p.fdv, null)
+      : null;
 
     // กฎ: ราคาสูงเกิน หรือ MC สูงระดับ Quadrillion ให้ดีดทิ้ง
     if (price && price > MAX_SAFE_PRICE) return false;
@@ -152,15 +153,23 @@ function pickBestPriceData(
     }
   }
 
+  let foundChange =
+    bestPair.priceChange?.h24 != null ? Number(bestPair.priceChange.h24) : null;
+
+  if (foundChange === null) {
+    for (const p of rows as any[]) {
+      if (p.priceChange?.h24 != null) {
+        foundChange = Number(p.priceChange.h24);
+        break; // เจอแล้วหยุดเลย
+      }
+    }
+  }
   // Debug Log (เปิดไว้ช่วยเช็คได้ครับ ถ้าเสถียรแล้วค่อยลบออก)
   // console.log(`[Dex] Best: ${bestPair.baseToken?.symbol} ($${bestPair.priceUsd}) | MC Found: ${foundMarketCap}`);
-
+  if (foundMarketCap === 0) foundMarketCap = null;
   return {
     priceUsd: toNum(bestPair.priceUsd, null),
-    priceChangeH24:
-      bestPair.priceChange?.h24 != null
-        ? Number(bestPair.priceChange.h24)
-        : null,
+    priceChangeH24: foundChange,
     marketCap: foundMarketCap,
   };
 }
@@ -338,7 +347,14 @@ export async function fetchDexscreenerBatchByTokens(
           if (data && data.priceUsd != null) {
             out[c.key] = data;
           }
-        } catch (err) {}
+        } catch (err: any) {
+          // 👈 ใส่ type any เพื่อดึง message
+          // --- 🔥 สิ่งที่ต้องเพิ่ม: Log Error ออกมา ---
+          console.warn(
+            `[Dex Fallback] Failed for ${c.original}: ${err.message}`
+          );
+          // ถ้าเห็น Log นี้ แปลว่า Dexscreener บล็อกเรา หรือเน็ตมีปัญหา
+        }
       }
     }
     // ...

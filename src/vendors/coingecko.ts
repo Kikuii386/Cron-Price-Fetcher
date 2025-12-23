@@ -45,11 +45,20 @@ function sleep(ms: number) {
 }
 
 function toNum(x: any): number | null {
-  if (typeof x === "number" && Number.isFinite(x)) return x;
+  if (x === null || x === undefined) return null;
+
+  if (typeof x === "number") {
+    return Number.isFinite(x) ? x : null;
+  }
+
   if (typeof x === "string") {
-    const n = Number(x);
+    // 🔥 แก้ไข: ลบลูกน้ำ (,) ออกก่อนแปลงเป็นตัวเลข
+    const clean = x.replace(/,/g, "").trim();
+    if (clean === "") return null;
+    const n = Number(clean);
     return Number.isFinite(n) ? n : null;
   }
+
   return null;
 }
 
@@ -152,12 +161,10 @@ export async function fetchCoingeckoBatchByIds(
         if (!item || !item.id) continue;
         const pid = item.id.toLowerCase();
 
-        if (pid === "russell" || pid === "ชื่อไอดีเหรียญที่คุณเทส") {
-          console.log(`[DEBUG GECKO] ${pid}:`, {
-            market_cap: item.market_cap,
-            fdv: item.fully_diluted_valuation,
-            total_supply: item.total_supply,
-            max_supply: item.max_supply,
+        if (pid === "5ire" || pid === "aaacat") {
+          console.log(`[DEBUG GECKO] ${pid} Raw:`, {
+            mc_raw: item.market_cap,
+            fdv_raw: item.fully_diluted_valuation,
           });
         }
 
@@ -169,7 +176,7 @@ export async function fetchCoingeckoBatchByIds(
           mcap = toNum(item.fully_diluted_valuation);
         }
         // --------------------------------------
-
+        if (mcap === 0) mcap = null;
         out[pid] = {
           priceUsd: toNum(item.current_price),
           priceChangeH24: toNum(item.price_change_percentage_24h),

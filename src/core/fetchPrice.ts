@@ -75,9 +75,9 @@ export async function fetchAllPrices(
   opts: { bypassCache?: boolean } = {}
 ): Promise<PriceResult[]> {
   // Prepare structures
-  const ENABLE_DEX = process.env.DEXSCREENER_ENABLED !== '0';
-  const ENABLE_GECKO = process.env.COINGECKO_ENABLED !== '0';
-  const ENABLE_CMC = process.env.CMC_ENABLED !== '0';
+  const ENABLE_DEX = process.env.DEXSCREENER_ENABLED !== "0";
+  const ENABLE_GECKO = process.env.COINGECKO_ENABLED !== "0";
+  const ENABLE_CMC = process.env.CMC_ENABLED !== "0";
   const results: PriceResult[] = new Array(tokens.length);
   const needFetchIdx: number[] = [];
 
@@ -186,10 +186,14 @@ export async function fetchAllPrices(
     const dexMap = await fetchDexscreenerBatchByTokens(addresses, {
       batchSize: 30,
       delayMs: 300,
-      timeoutMs: 8000,
+      timeoutMs: 15000,
       retries: 2,
-   }).catch(() => ({} as Record<string, any>)); 
-    
+    }).catch((err) => {
+      // ✅ เพิ่ม Log เพื่อดูสาเหตุ
+      console.error("❌ Dexscreener Batch Failed:", err.message);
+      return {} as Record<string, any>;
+    });
+
     applyMap(dexMap, "dexscreener");
   }
 
@@ -198,7 +202,13 @@ export async function fetchAllPrices(
     const ids: string[] = [];
     const idxForId: number[] = [];
     for (const i of needFetchIdx) {
-      if (results[i]) continue;
+      if (
+        results[i] &&
+        results[i].marketCap != null &&
+        results[i].marketCap > 0
+      ) {
+        continue; // ถ้าข้อมูลครบแล้ว ค่อยข้าม
+      }
       const id = tokens[i].coingecko_id?.toLowerCase();
       if (id) {
         ids.push(id);
@@ -209,12 +219,11 @@ export async function fetchAllPrices(
       const geckoMap = await fetchCoingeckoBatchByIds(ids, {
         batchSize: 150,
         delayMs: 250,
-        timeoutMs: 8000,
+        timeoutMs: 15000,
         retries: 2,
       }).catch(() => ({} as Record<string, any>));
 
       for (const i of idxForId) {
-        if (results[i]) continue;
         const id = tokens[i].coingecko_id!.toLowerCase();
         const v = geckoMap[id];
         // v ตอนนี้เป็น Object แล้ว ไม่ใช่ตัวเลข
@@ -236,7 +245,13 @@ export async function fetchAllPrices(
     const slugs: string[] = [];
     const idxForSlug: number[] = [];
     for (const i of needFetchIdx) {
-      if (results[i]) continue;
+      if (
+        results[i] &&
+        results[i].marketCap != null &&
+        results[i].marketCap > 0
+      ) {
+        continue;
+      }
       const slug = tokens[i].cmc_slug?.toLowerCase();
       if (slug) {
         slugs.push(slug);
@@ -251,7 +266,6 @@ export async function fetchAllPrices(
       }).catch(() => ({} as Record<string, any>));
 
       for (const i of idxForSlug) {
-        if (results[i]) continue;
         const slug = tokens[i].cmc_slug!.toLowerCase();
         const v = cmcMap[slug];
         if (v && v.priceUsd != null) {
