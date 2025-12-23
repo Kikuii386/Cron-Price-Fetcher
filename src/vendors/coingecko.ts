@@ -176,6 +176,7 @@ export async function fetchCoingeckoBatchByIds(
           mcap = toNum(item.fully_diluted_valuation);
         }
         // --------------------------------------
+        if (mcap !== null) mcap = Math.floor(mcap);
         if (mcap === 0) mcap = null;
         out[pid] = {
           priceUsd: toNum(item.current_price),

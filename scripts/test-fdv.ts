@@ -2,7 +2,7 @@
 import { fetchCoingeckoBatchByIds } from "../src/vendors/coingecko.js";
 
 async function run() {
-  const targetId = "pat"; // ไอดีเหรียญที่มีปัญหา (MC=0, FDV=มีค่า)
+  const targetId = "aaa-cat"; // ไอดีเหรียญที่มีปัญหา (MC=0, FDV=มีค่า)
 
   console.log(`🔍 Testing Fallback Logic for token: '${targetId}'...`);
   
