@@ -44,73 +44,122 @@ function toNum(v: any, d: number | null = null): number | null {
 
 const TRUSTED_QUOTES = new Set([
   "WETH",
-  "ETH", // Ethereum
+  "ETH",
+  "STETH",
+  "CBETH",
+  "WETH.E",
   "SOL",
-  "WSOL", // Solana
+  "WSOL",
+  "MSOL",
+  "JITOSOL",
   "WBNB",
-  "BNB", // BNB
+  "BNB",
   "WMATIC",
-  "MATIC", // Polygon
+  "MATIC",
+  "WMATIC.E",
   "WAVAX",
-  "AVAX", // Avalanche
+  "AVAX",
+  "WAVAX.E",
   "SUI",
-  "WSUI", // Sui
+  "WSUI",
   "WBTC",
-  "BTC", // Bitcoin
+  "BTC",
+  "CBTC",
   "USDT",
+  "USDT.E",
   "USDC",
+  "USDC.E",
+  "USDBC",
   "BUSD",
-  "USDbC", // Others
   "DAI",
+  "FDUSD",
 ]);
+const BLACKLIST_QUOTES = new Set(["KABOSU", "BITCOIN", "HARRYPOTTER", "OBAMA"]);
 
 function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
-  const rows = (pairs || [])
-    .filter((p) => p && p.priceUsd != null)
-    .map((p) => ({
-      ...p,
-      _liq: toNum(p?.liquidity?.usd, 0) as number,
-      _price: toNum(p?.priceUsd, NaN) as number,
-      _quoteSym: p?.quoteToken?.symbol?.toUpperCase() || "",
-    }))
-    // เปลี่ยนจาก (p) เป็น (p: any)
-    .filter((p: any) => Number.isFinite(p._price) && p._liq >= minLiqUsd)
-    .sort((a: any, b: any) => {
-      const aTrusted = TRUSTED_QUOTES.has(a._quoteSym);
-      const bTrusted = TRUSTED_QUOTES.has(b._quoteSym);
-      if (aTrusted && !bTrusted) return -1;
-      if (!aTrusted && bTrusted) return 1;
-      return b._liq - a._liq;
+  const DEBUG_ADDR = "0x5950A5FB85eEbF62d86a332854D201db719942Ce".toLowerCase();
+  const isTarget = pairs.some(
+    (p) => p.baseToken?.address?.toLowerCase() === DEBUG_ADDR
+  );
+
+  const validPairs = (pairs || [])
+    .map((p) => {
+      const qSymbol = (p?.quoteToken?.symbol || "").toUpperCase().trim();
+      const liq = toNum(p?.liquidity?.usd, 0) as number;
+      // เช็คว่าเป็นเหรียญหลักที่น่าเชื่อถือหรือไม่
+      const isTrusted = TRUSTED_QUOTES.has(qSymbol);
+
+      return {
+        ...p,
+        _liq: liq,
+        _price: toNum(p?.priceUsd, NaN) as number,
+        _quoteSym: qSymbol,
+        _isTrusted: isTrusted,
+      };
+    })
+    .filter((p) => {
+      // ⛔ 1. BLACKLIST CHECK: ถ้าเจอชื่อต้องห้าม ดีดทิ้งทันที ไม่สน Liquidity
+      if (BLACKLIST_QUOTES.has(p._quoteSym)) {
+        if (isTarget) console.log(`[FILTER] 🚫 Banned Quote: ${p._quoteSym}`);
+        return false;
+      }
+      if (!Number.isFinite(p._price) || p._liq < minLiqUsd) return false;
+
+      // 🛡️ 3. SPAM FILTER (ดัก Liquidity ปลอม):
+      // ถ้าไม่ใช่ Trusted และ Liq สูงเวอร์ (> 10M) -> ทิ้ง
+      if (!p._isTrusted && p._liq > 10_000_000) {
+        if (isTarget) {
+          console.log(
+            `[FILTER] 🗑️ Suspicious Liq > 10M: ${p.baseToken?.symbol}/${
+              p._quoteSym
+            } ($${p._liq.toLocaleString()})`
+          );
+        }
+        return false;
+      }
+
+      return true;
     });
 
-  return rows as unknown as DexPair[];
+  if (validPairs.length === 0) {
+    if (isTarget)
+      console.log(`[ETH6900] ❌ No valid pairs found after filter!`);
+    return [];
+  }
+
+  // แยกกอง Trusted vs Untrusted
+  const trustedBatch = validPairs.filter((p) => p._isTrusted);
+  const otherBatch = validPairs.filter((p) => !p._isTrusted);
+
+  // เรียงลำดับ
+  trustedBatch.sort((a, b) => b._liq - a._liq);
+  otherBatch.sort((a, b) => b._liq - a._liq);
+
+  // เอา Trusted ขึ้นก่อนเสมอ
+  const result = [...trustedBatch, ...otherBatch] as unknown as DexPair[];
+
+  // Log Winner
+  if (isTarget) {
+    const winner = result[0] as any;
+    console.log(
+      `⭐⭐⭐ FINAL WINNER: ${winner.baseToken?.symbol}/${winner.quoteToken?.symbol} ` +
+        `| Liq: $${Math.floor(winner.liquidity?.usd || 0).toLocaleString()} ` +
+        `| Price: ${winner.priceUsd}`
+    );
+  }
+
+  return result;
 }
 
-/**
- * Choose the most reliable pair: prioritize highest USD liquidity, then 24h volume, then has price.
- */
-/**
- * แก้ไขจาก pickBestPrice เดิม ให้คืนค่าข้อมูลครบชุด
- */
-
-const MAX_SAFE_MCAP = 10_000_000_000_000; // 10 Trillion USD (เกินกว่านี้คือ Glitch)
-const MAX_SAFE_PRICE = 100_000_000;
-/**
- * เลือกราคาที่ดีที่สุด + กรองข้อมูลขยะ + หา Market Cap สำรอง
- */
 function pickBestPriceData(
   pairs: DexPair[],
   opts?: { topN?: number; minLiqUsd?: number }
 ): DexPriceData {
-  // 1. ตั้งค่า Liquidity ขั้นต่ำ (แนะนำ $50 เพื่อกัน Pool ผีที่สร้างมาหลอก)
   const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 0);
-
-  // 2. ดึง Pair มาเรียงลำดับ (Liquidity สูงสุด + Trusted Quote ขึ้นก่อน)
+  const MAX_SAFE_MCAP = 100_000_000_000;
+  const MAX_SAFE_PRICE = 100_000_000;
   let rows = topByLiquidity(pairs, minLiqUsd);
-
-  // 3. 🛡️ SANITY CHECK: กรอง Pair ที่ราคาหรือ MC เวอร์เกินจริง
   rows = rows.filter((p) => {
-    // ✅ แก้ไข 2: ใช้ toNum(..., null) เพื่อเช็คค่าจริง
     const price = toNum(p.priceUsd, null);
     const mcap = p.marketCap
       ? toNum(p.marketCap, null)
@@ -118,14 +167,12 @@ function pickBestPriceData(
       ? toNum(p.fdv, null)
       : null;
 
-    // กฎ: ราคาสูงเกิน หรือ MC สูงระดับ Quadrillion ให้ดีดทิ้ง
     if (price && price > MAX_SAFE_PRICE) return false;
     if (mcap && mcap > MAX_SAFE_MCAP) return false;
 
     return true;
   });
 
-  // ถ้ากรองแล้วไม่เหลืออะไรเลย ให้คืนค่าว่าง
   if (!rows.length)
     return { priceUsd: null, priceChangeH24: null, marketCap: null };
 

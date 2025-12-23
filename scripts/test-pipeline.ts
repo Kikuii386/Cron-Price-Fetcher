@@ -9,11 +9,11 @@ async function testAllSources() {
   // จำลอง Token ที่มีข้อมูลครบในทุกแหล่ง (เช่น SOL)
   const testTokens: SheetTokenRow[] = [
     {
-      chain: "sol", // หรือ chain ที่ Pat อยู่
-      contract_address: "...", // ไม่สำคัญสำหรับ gecko test
-      symbol: "PAT",
-      coingecko_id: "pat", // ✅ สำคัญ: ต้องใส่ id ให้ถูก
-      cmc_slug: "pat",
+      chain: "ethereum", // หรือ chain ที่ Pat อยู่
+      contract_address: "0x5950A5FB85eEbF62d86a332854D201db719942Ce", // ไม่สำคัญสำหรับ gecko test
+      symbol: "ETH6900",
+      coingecko_id: "eth6900", // ✅ สำคัญ: ต้องใส่ id ให้ถูก
+      cmc_slug: "eth6900",
     },
   ];
 
