@@ -1,4 +1,4 @@
-import type { PriceResult, Chain } from "../types.js";
+import type { PriceResult, Chain } from "../shared/types.js";
 
 /**
  * แปลงผลลัพธ์ราคาที่ได้จากแหล่งต่าง ๆ (Dexscreener, Gecko, CMC)
@@ -8,10 +8,10 @@ export function toPriceResult(
   chain: Chain,
   address: string,
   // แก้ไขจุดนี้: รับเป็นก้อนข้อมูลจาก Vendors
-  data: { 
-    priceUsd: number | null; 
-    priceChangeH24: number | null; 
-    marketCap: number | null 
+  data: {
+    priceUsd: number | null;
+    priceChangeH24: number | null;
+    marketCap: number | null;
   },
   source: PriceResult["source"],
   symbol?: string

@@ -1,7 +1,7 @@
 import axios from "axios";
 import pRetry from "p-retry";
 import * as cheerio from "cheerio";
-import { CFG } from "../config.js";
+import { CFG } from "../shared/config.js";
 import crypto from "node:crypto";
 
 // Fast + robust CMC (slug-only) implementation, aligned with a typical test-cmc style

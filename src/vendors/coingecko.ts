@@ -1,7 +1,7 @@
 import axios from "axios";
 import pRetry from "p-retry";
 import crypto from "node:crypto";
-import { CFG } from "../config.js";
+import { CFG } from "../shared/config.js";
 
 const GECKO_BATCH = Math.max(
   1,

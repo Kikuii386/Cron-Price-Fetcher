@@ -1,7 +1,7 @@
 // scripts/test-pipeline.ts
 import "dotenv/config";
 import { fetchAllPrices } from "../src/core/fetchPrice.js";
-import type { SheetTokenRow } from "../src/types.js";
+import type { SheetTokenRow } from "../src/shared/types.js";
 
 async function testAllSources() {
   console.log("🚀 Testing Data Integrity from All Sources...");

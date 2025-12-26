@@ -1,10 +1,20 @@
 import * as http from "http";
 import axios from "axios";
-import { CFG } from "./config.js";
+import { pool } from "./shared/storage.js";
+import { CFG } from "./shared/config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
-import { storeResults, cacheGet, cacheKey, readCacheBatch } from "./storage.js";
-import { pingSupabase } from "./storage.js";
-import type { SheetTokenRow, PriceResult } from "./types.js";
+import { handleAuthCheck } from "./api/auth.js";
+import {
+  storeResults,
+  cacheGet,
+  cacheKey,
+  readCacheBatch,
+} from "./shared/storage.js";
+import { pingSupabase } from "./shared/storage.js";
+import type { SheetTokenRow, PriceResult } from "./shared/types.js";
+
+const AUTH_CHECK_PATH = "/auth/check-email";
+const PORT = Number(process.env.PORT || 3000);
 
 // Lightweight shape for Dexscreener normalized rows used in debug endpoints
 export type DsRow = {
@@ -184,8 +194,12 @@ async function runOnceInstrumented(): Promise<void> {
 }
 
 // --- Server ---
-const server = http.createServer(async (req, res) => {
+export const server = http.createServer(async (req, res) => {
   try {
+    const url = new URL(req.url || "/", `http://${req.headers.host}`);
+    if (req.method === "POST" && url.pathname === AUTH_CHECK_PATH) {
+      return handleAuthCheck(req, res);
+    }
     // CORS preflight
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
@@ -196,8 +210,6 @@ const server = http.createServer(async (req, res) => {
       res.end();
       return;
     }
-
-    const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
       ok(res, { ok: true });
@@ -793,9 +805,4 @@ const server = http.createServer(async (req, res) => {
   } catch (e: any) {
     json(res, 500, { ok: false, error: e?.message || "internal error" });
   }
-});
-
-const PORT = Number(process.env.PORT || 3000);
-server.listen(PORT, () => {
-  console.log(`[server] listening on ${PORT}`);
 });
