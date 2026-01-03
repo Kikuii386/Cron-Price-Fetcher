@@ -1,6 +1,5 @@
 import * as http from "http";
 import axios from "axios";
-import { pool } from "./shared/storage.js";
 import { CFG } from "./shared/config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
 import { handleAuthCheck } from "./api/auth.js";
