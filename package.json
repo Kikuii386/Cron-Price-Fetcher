@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
+    "clean": "rm -rf node_modules pnpm-lock.yaml .next",
     "start": "node --enable-source-maps dist/src/index.js",
     "dev": "tsx watch src/index.ts",
     "dev:once": "tsx src/index.ts"
