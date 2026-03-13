@@ -3,6 +3,7 @@ import axios from "axios";
 import { CFG } from "./shared/config.js";
 import { fetchAllPrices } from "./core/fetchPrice.js";
 import { handleAuthCheck } from "./api/auth.js";
+import { handleFavorites } from "./api/favorites.js";
 import {
   storeResults,
   cacheGet,
@@ -210,6 +211,10 @@ export const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/favorites") {
+      return handleFavorites(req, res);
+    }
+
     if (req.method === "GET" && url.pathname === "/health") {
       ok(res, { ok: true });
       return;
@@ -344,8 +349,7 @@ export const server = http.createServer(async (req, res) => {
               await storeResults(fresh);
               const s = summarize(fresh);
               console.log(
-                `[stats refresh async] total=${s.totals.total} ok=${
-                  s.totals.withPrice
+                `[stats refresh async] total=${s.totals.total} ok=${s.totals.withPrice
                 } nulls=${s.totals.nulls} src=${JSON.stringify(s.bySource)}`
               );
             } catch (e: any) {
@@ -666,6 +670,8 @@ export const server = http.createServer(async (req, res) => {
           return;
         }
 
+
+
         const t0 = Date.now();
 
         // 1) สร้าง token หนึ่งตัวจากพารามิเตอร์ (ถ้า Apps Script ไม่มีตัวนี้)
@@ -747,16 +753,16 @@ export const server = http.createServer(async (req, res) => {
           const writeRow: PriceResult | null =
             shouldUseDs && prod
               ? {
-                  chain: (prod.chain ?? token.chain) as string,
-                  address: (prod.address ?? token.contract_address) as string,
-                  priceChangeH24: (bestDs as any)?.priceChangeH24 ?? null,
-                  marketCap: (bestDs as any)?.marketCap ?? null,
-                  priceUsd: Number(bestDs!.priceUsd),
-                  source: "dexscreener",
-                  at: new Date().toISOString(),
-                }
+                chain: (prod.chain ?? token.chain) as string,
+                address: (prod.address ?? token.contract_address) as string,
+                priceChangeH24: (bestDs as any)?.priceChangeH24 ?? null,
+                marketCap: (bestDs as any)?.marketCap ?? null,
+                priceUsd: Number(bestDs!.priceUsd),
+                source: "dexscreener",
+                at: new Date().toISOString(),
+              }
               : prod
-              ? {
+                ? {
                   chain: prod.chain as string,
                   address: prod.address as string,
                   priceUsd: (prod.priceUsd ?? null) as number | null,
@@ -766,14 +772,17 @@ export const server = http.createServer(async (req, res) => {
                   source: (prod.source ?? null) as any,
                   at: (prod.at ?? new Date().toISOString()) as string,
                 }
-              : null;
+                : null;
 
           if (writeRow) {
             await storeResults([writeRow]);
             upserted = true;
             upsertSource = shouldUseDs ? "ds" : "prod";
           }
+
+
         }
+
 
         ok(
           res,
