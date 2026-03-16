@@ -110,8 +110,7 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
       if (!p._isTrusted && p._liq > 10_000_000) {
         if (isTarget) {
           console.log(
-            `[FILTER] 🗑️ Suspicious Liq > 10M: ${p.baseToken?.symbol}/${
-              p._quoteSym
+            `[FILTER] 🗑️ Suspicious Liq > 10M: ${p.baseToken?.symbol}/${p._quoteSym
             } ($${p._liq.toLocaleString()})`
           );
         }
@@ -143,8 +142,8 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
     const winner = result[0] as any;
     console.log(
       `⭐⭐⭐ FINAL WINNER: ${winner.baseToken?.symbol}/${winner.quoteToken?.symbol} ` +
-        `| Liq: $${Math.floor(winner.liquidity?.usd || 0).toLocaleString()} ` +
-        `| Price: ${winner.priceUsd}`
+      `| Liq: $${Math.floor(winner.liquidity?.usd || 0).toLocaleString()} ` +
+      `| Price: ${winner.priceUsd}`
     );
   }
 
@@ -156,7 +155,7 @@ function pickBestPriceData(
   opts?: { topN?: number; minLiqUsd?: number }
 ): DexPriceData {
   const minLiqUsd = Math.max(0, opts?.minLiqUsd ?? 0);
-  const MAX_SAFE_MCAP = 100_000_000_000;
+  const MAX_SAFE_MCAP = 1_000_000_000_000;
   const MAX_SAFE_PRICE = 100_000_000;
   let rows = topByLiquidity(pairs, minLiqUsd);
   rows = rows.filter((p) => {
@@ -164,8 +163,8 @@ function pickBestPriceData(
     const mcap = p.marketCap
       ? toNum(p.marketCap, null)
       : p.fdv
-      ? toNum(p.fdv, null)
-      : null;
+        ? toNum(p.fdv, null)
+        : null;
 
     if (price && price > MAX_SAFE_PRICE) return false;
     if (mcap && mcap > MAX_SAFE_MCAP) return false;
@@ -373,8 +372,13 @@ export async function fetchDexscreenerBatchByTokens(
     const grouped: Record<string, DexPair[]> = {};
     for (const p of pairs) {
       const bKey = String(p.baseToken?.address || "").toLowerCase();
-      // Only group by BASE token to avoid mixing quote-token prices.
-      if (setReq.has(bKey)) (grouped[bKey] ||= []).push(p);
+      const qKey = String(p.quoteToken?.address || "").toLowerCase();
+
+      if (setReq.has(bKey)) {
+        (grouped[bKey] ||= []).push(p);
+      } else if (setReq.has(qKey)) {
+        (grouped[qKey] ||= []).push(p);
+      }
     }
 
     for (const c of chunk) {
@@ -384,8 +388,8 @@ export async function fetchDexscreenerBatchByTokens(
       out[c.key] = data;
     }
 
-    if (!pairs.length || chunk.every((c) => out[c.key]?.priceUsd == null)) {
-      for (const c of chunk) {
+    for (const c of chunk) {
+      if (out[c.key]?.priceUsd == null) {
         try {
           const data = await pRetry(() => fetchDexscreenerPrice(c.original), {
             retries,
@@ -395,16 +399,10 @@ export async function fetchDexscreenerBatchByTokens(
             out[c.key] = data;
           }
         } catch (err: any) {
-          // 👈 ใส่ type any เพื่อดึง message
-          // --- 🔥 สิ่งที่ต้องเพิ่ม: Log Error ออกมา ---
-          console.warn(
-            `[Dex Fallback] Failed for ${c.original}: ${err.message}`
-          );
-          // ถ้าเห็น Log นี้ แปลว่า Dexscreener บล็อกเรา หรือเน็ตมีปัญหา
+          console.warn(`[Dex Fallback] Failed for ${c.original}: ${err.message}`);
         }
       }
     }
-    // ...
   }
   return out;
 }
