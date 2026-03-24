@@ -126,20 +126,17 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
     return [];
   }
 
-  // แยกกอง Trusted vs Untrusted
-  const trustedBatch = validPairs.filter((p) => p._isTrusted);
-  const otherBatch = validPairs.filter((p) => !p._isTrusted);
-
-  // เรียงลำดับ
-  trustedBatch.sort((a, b) => b._liq - a._liq);
-  otherBatch.sort((a, b) => b._liq - a._liq);
-
-  // เอา Trusted ขึ้นก่อนเสมอ
-  const result = [...trustedBatch, ...otherBatch] as unknown as DexPair[];
+  // ✅ แก้ไขตรงนี้: เลิกระบบชนชั้น (ที่เอา Trusted ขึ้นก่อนเสมอ)
+  // เปลี่ยนมาใช้ "ระบบแต้มต่อ" แทน (ถ้าเป็น Trusted ให้ถือว่า Liquidity เยอะกว่าปกติ 5 เท่าในการจัดอันดับ)
+  validPairs.sort((a, b) => {
+    const scoreA = a._liq * (a._isTrusted ? 5 : 1);
+    const scoreB = b._liq * (b._isTrusted ? 5 : 1);
+    return scoreB - scoreA; // เรียงจากคะแนนมากไปน้อย
+  });
 
   // Log Winner
   if (isTarget) {
-    const winner = result[0] as any;
+    const winner = validPairs[0] as any;
     console.log(
       `⭐⭐⭐ FINAL WINNER: ${winner.baseToken?.symbol}/${winner.quoteToken?.symbol} ` +
       `| Liq: $${Math.floor(winner.liquidity?.usd || 0).toLocaleString()} ` +
@@ -147,7 +144,7 @@ function topByLiquidity(pairs: DexPair[], minLiqUsd = 0): DexPair[] {
     );
   }
 
-  return result;
+  return validPairs as unknown as DexPair[];
 }
 
 function pickBestPriceData(
